@@ -84,7 +84,8 @@ jobs:
             --target "$GITHUB_SHA" --prerelease \
             --title "${{ steps.ver.outputs.name }}" \
             --notes-file notes.md \
-            "NetHack-ps5-nightly.zip"
+            "NetHack-ps5-nightly.zip" \
+            "sys/ps5/pkg/NetHack/nethack.elf"
 
       - name: Publish versioned release
         if: steps.ver.outputs.tag != 'nightly'
@@ -95,4 +96,5 @@ jobs:
             --verify-tag --latest \
             --title "${{ steps.ver.outputs.name }}" \
             --notes-file notes.md \
-            "NetHack-ps5-${{ steps.ver.outputs.tag }}.zip"
+            "NetHack-ps5-${{ steps.ver.outputs.tag }}.zip" \
+            "sys/ps5/pkg/NetHack/nethack.elf"
