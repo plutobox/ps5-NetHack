@@ -1,0 +1,8 @@
+# NetHack options for the PS5 port. Edit /data/NetHack/.nethackrc to change.
+OPTIONS=windowtype:curses
+OPTIONS=color,!number_pad,autopickup,pickup_types:$?!/="+
+OPTIONS=hilite_pet,hilite_pile,lit_corridor,showexp,time
+OPTIONS=menucolors,statushilites:10
+OPTIONS=perm_invent,msg_window:reversed
+OPTIONS=!mail,!splash_screen
+OPTIONS=symset:DECgraphics

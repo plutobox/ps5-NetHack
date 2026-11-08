@@ -1,0 +1,6 @@
+deps/
+obj/
+gen/
+pkg/
+nethack.elf
+*.log
