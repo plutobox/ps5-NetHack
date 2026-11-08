@@ -1,0 +1,98 @@
+name: PS5 release
+
+# - Push to the ps5 branch  -> rebuild and replace the "nightly" pre-release
+# - Push a tag like v0.1.0  -> publish a versioned release
+# - Manual run              -> same as a push (nightly)
+on:
+  push:
+    branches: [ps5]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ps5-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 lld-18 llvm-18 cmake make wget unzip python3
+
+      # The SDK + SDL2 build are the slow part (SDL configure runs hundreds
+      # of cross-compile checks). Cache them; key changes when setup.sh does.
+      - name: Cache SDK and SDL2
+        uses: actions/cache@v4
+        with:
+          path: |
+            sys/ps5/deps/ps5-payload-sdk
+          key: ps5-deps-${{ runner.os }}-${{ hashFiles('sys/ps5/setup.sh') }}
+
+      - name: Set up dependencies
+        working-directory: sys/ps5
+        run: ./setup.sh
+
+      - name: Build
+        working-directory: sys/ps5
+        run: |
+          make -j"$(nproc)"
+          make package
+
+      - name: Name this build
+        id: ver
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "name=NetHack PS5 ${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=nightly" >> "$GITHUB_OUTPUT"
+            echo "name=NetHack PS5 nightly ($(date -u +%Y-%m-%d) ${GITHUB_SHA::7})" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Zip package
+        working-directory: sys/ps5/pkg
+        run: zip -qr "$GITHUB_WORKSPACE/NetHack-ps5-${{ steps.ver.outputs.tag }}.zip" NetHack
+
+      - name: Write release notes
+        run: |
+          cat > notes.md <<EOF
+          Built from \`${GITHUB_SHA::7}\` on $(date -u +"%Y-%m-%d %H:%M UTC").
+
+          **Install:** unzip, copy the \`NetHack\` folder to \`/data/NetHack\` on the PS5
+          (e.g. over FTP), then launch it from the homebrew menu or with
+          \`hbldr /data/NetHack/nethack.elf\` in shsrv.
+
+          Controls and build notes: [sys/ps5/README.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/sys/ps5/README.md)
+          EOF
+
+      - name: Publish nightly
+        if: steps.ver.outputs.tag == 'nightly'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly --cleanup-tag --yes || true
+          gh release create nightly \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "${{ steps.ver.outputs.name }}" \
+            --notes-file notes.md \
+            "NetHack-ps5-nightly.zip"
+
+      - name: Publish versioned release
+        if: steps.ver.outputs.tag != 'nightly'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --verify-tag --latest \
+            --title "${{ steps.ver.outputs.name }}" \
+            --notes-file notes.md \
+            "NetHack-ps5-${{ steps.ver.outputs.tag }}.zip"

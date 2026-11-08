@@ -26,7 +26,12 @@ make package        # -> pkg/NetHack/
 
 ## Install and run
 
-1. Copy `pkg/NetHack/` to `/data/NetHack/` on the PS5 over FTP.
+Prebuilt zips are on the [Releases](../../releases) page. `nightly` tracks
+the `ps5` branch, and `v*` tags are stable releases. Both are built by
+`.github/workflows/ps5-release.yml`.
+
+1. Unzip the release (or use `pkg/NetHack/` from your own build) and copy the
+   `NetHack` folder to `/data/NetHack/` on the PS5 over FTP.
 2. Launch it in one of two ways:
    - **Homebrew launcher (websrv):** NetHack shows up as a tile, driven by
      `homebrew.js`.
