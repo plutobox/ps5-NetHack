@@ -77,6 +77,9 @@ jobs:
             return 1
           }
           fetch_rev drakmor/ps5-native-app-boilerplate "$BOILERPLATE_REV" "$HOME/ps5-native-app-boilerplate"
+          # The compiler wrapper is committed without its executable bit, and
+          # the SDL2 build runs it directly.
+          chmod +x "$HOME/ps5-native-app-boilerplate/tooling/prospero-clang18"
           retry bash "$HOME/ps5-native-app-boilerplate/tools/setup-native-dependencies.sh"
           # The boilerplate's pinned PacBrew release: zlib for the saves.
           retry bash "$HOME/ps5-native-app-boilerplate/tools/setup-pacbrew-dependencies.sh" --all
