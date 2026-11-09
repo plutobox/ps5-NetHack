@@ -16,6 +16,7 @@
  */
 #include <SDL.h>
 #include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -163,18 +164,43 @@ static void stop_repeat(SDL_Keycode k)
     SDL_UnlockMutex(rep_lock);
 }
 
-/* Timer thread: re-sends a held movement key so you can walk by holding. */
-static Uint32 repeat_tick(Uint32 interval, void *unused)
+/* Re-sends a held movement key so you can walk by holding; 1 if it did. */
+static int repeat_due(void)
 {
-    (void) unused;
+    int sent = 0;
+
     SDL_LockMutex(rep_lock);
     if (rep_key && SDL_TICKS_PASSED(SDL_GetTicks(), rep_next)) {
         push_key(rep_key);
         rep_next = SDL_GetTicks() + REPEAT_RATE_MS;
+        sent = 1;
     }
     SDL_UnlockMutex(rep_lock);
+    return sent;
+}
+
+#ifdef PS5_CONTROLLER
+/* The native title repeats from PDCurses' own polling (SDL_PollEvent is
+ * wrapped at link time): only after the controller's pending events have
+ * been read, so a released button is never taken for a held one.  A timer
+ * thread would repeat whenever a slow frame kept the release unread, and a
+ * single press on the d-pad moved twice. */
+int __real_SDL_PollEvent(SDL_Event *e);
+int __wrap_SDL_PollEvent(SDL_Event *e)
+{
+    if (__real_SDL_PollEvent(e))
+        return 1;
+    return repeat_due() ? __real_SDL_PollEvent(e) : 0;
+}
+#else
+/* Timer thread for the payload. */
+static Uint32 repeat_tick(Uint32 interval, void *unused)
+{
+    (void) unused;
+    repeat_due();
     return interval;
 }
+#endif
 
 static SDL_Keycode stick_direction(int x, int y)
 {
@@ -649,6 +675,145 @@ static void present(void)
 #endif
 }
 
+/* ---- Typing: the system's on-screen keyboard (IME dialog) -------------- */
+
+/* As ps5-payload-dev's SDL port declares them (src/video/ps5/
+ * SDL_ps5keyboard.c).  The text is UTF-16: the PS5's wchar_t is 16 bits. */
+typedef struct {
+    int userId;
+    int type;                   /* 1: basic Latin */
+    uint64_t supportedLanguages;
+    int enterLabel;             /* 0: default */
+    int inputMethod;            /* 0: default */
+    void *filter;
+    uint32_t option;
+    uint32_t maxTextLength;
+    uint16_t *inputTextBuffer;
+    float posx, posy;
+    int halign, valign;         /* 1, 1: centred */
+    const uint16_t *placeholder;
+    const uint16_t *title;
+    int8_t reserved[16];
+} ime_dialog_param;
+
+typedef struct {
+    int outcome;                /* 0 OK, 1 cancelled, 2 aborted */
+    int8_t reserved[12];
+} ime_dialog_result;
+
+enum { IME_STATUS_NONE, IME_STATUS_RUNNING, IME_STATUS_FINISHED };
+
+/* A title is not given libSceImeDialog at start (its imports would be
+ * left unresolved), so it is loaded when first needed and its functions
+ * looked up by name. */
+int sceKernelLoadStartModule(const char *path, size_t argc, const void *argv,
+                             uint32_t flags, void *option, int *result);
+int sceKernelDlsym(int handle, const char *symbol, void **address);
+/* A title's sandbox shows the system libraries under /<random word>/ */
+const char *sceKernelGetFsSandboxRandomWord(void);
+
+static int (*ime_init)(const ime_dialog_param *param, void *extended);
+static int (*ime_status)(void);
+static int (*ime_result)(ime_dialog_result *result);
+static int (*ime_term)(void);
+
+static int ime_load(void)
+{
+    static int state; /* 0 not tried, 1 loaded, -1 unavailable */
+    const char *word = sceKernelGetFsSandboxRandomWord();
+    char path[128];
+    int handle;
+
+    if (state)
+        return state > 0;
+    state = -1;
+    snprintf(path, sizeof path, "/%s/common/lib/libSceImeDialog.sprx",
+             word ? word : "system");
+    handle = sceKernelLoadStartModule(path, 0, NULL, 0, NULL, NULL);
+    if (handle < 0) {
+        printf("nethack: cannot load the on-screen keyboard from %s "
+               "(0x%08x)\n", path, (unsigned) handle);
+        return 0;
+    }
+    {
+        int r1 = sceKernelDlsym(handle, "sceImeDialogInit",
+                                (void **) &ime_init);
+        int r2 = sceKernelDlsym(handle, "sceImeDialogGetStatus",
+                                (void **) &ime_status);
+        int r3 = sceKernelDlsym(handle, "sceImeDialogGetResult",
+                                (void **) &ime_result);
+        int r4 = sceKernelDlsym(handle, "sceImeDialogTerm",
+                                (void **) &ime_term);
+
+        if (r1 || r2 || r3 || r4 || !ime_init || !ime_status || !ime_result
+            || !ime_term) {
+            printf("nethack: the on-screen keyboard's functions are missing "
+                   "(module 0x%08x: %08x %08x %08x %08x)\n", (unsigned) handle,
+                   (unsigned) r1, (unsigned) r2, (unsigned) r3,
+                   (unsigned) r4);
+            return 0;
+        }
+    }
+    state = 1;
+    return 1;
+}
+
+/* Ask for a line of text with the on-screen keyboard, the prompt as its
+ * title; for NetHack's getlin() (win/curses/cursdial.c).  Returns 1 with
+ * the text in answer, 0 if cancelled, -1 if the keyboard cannot open (the
+ * caller then reads keys as usual). */
+int ps5_text_input(const char *prompt, char *answer, int size)
+{
+    static uint16_t title[128], text[256];
+    ime_dialog_param param;
+    ime_dialog_result result;
+    int user = -1, status, rc, i;
+
+    if (size < 2 || !screen || !ime_load())
+        return -1;
+    for (i = 0; prompt[i] && i < (int) SDL_arraysize(title) - 1; i++)
+        title[i] = (unsigned char) prompt[i];
+    title[i] = 0;
+    memset(text, 0, sizeof text);
+
+    memset(&param, 0, sizeof param);
+    sceUserServiceGetForegroundUser(&user);
+    param.userId = user;
+    param.type = 1; /* basic Latin: NetHack's text is ASCII */
+    param.maxTextLength = (uint32_t) SDL_min(size - 1,
+                                             (int) SDL_arraysize(text) - 1);
+    param.inputTextBuffer = text;
+    param.posx = screen->w / 2.0f;
+    param.posy = screen->h / 2.0f;
+    param.halign = param.valign = 1;
+    param.title = title;
+
+    rc = ime_init(&param, NULL);
+    if (rc < 0) {
+        printf("nethack: on-screen keyboard unavailable (0x%08x)\n",
+               (unsigned) rc);
+        return -1;
+    }
+    printf("nethack: on-screen keyboard open: %s\n", prompt);
+    /* the system draws the keyboard over the title; keep showing the game
+     * underneath until it closes */
+    while ((status = ime_status()) == IME_STATUS_RUNNING) {
+        present();
+        sceKernelUsleep(16000);
+    }
+    memset(&result, 0, sizeof result);
+    rc = status == IME_STATUS_FINISHED ? ime_result(&result) : -1;
+    ime_term();
+    printf("nethack: on-screen keyboard closed (status %d, result 0x%08x, "
+           "outcome %d)\n", status, (unsigned) rc, result.outcome);
+    if (rc < 0 || result.outcome != 0)
+        return 0;
+    for (i = 0; text[i] && i < size - 1; i++)
+        answer[i] = text[i] < 128 ? (char) text[i] : '?';
+    answer[i] = '\0';
+    return 1;
+}
+
 #ifdef PS5_SCREENSHOT
 /* Debug builds: type the contents of /data/nethack-input.txt, then remove
  * it, so the game can be driven over FTP.  "\n" is Return, and ^ escapes
@@ -747,7 +912,8 @@ int __wrap_SDL_UpdateWindowSurfaceRects(SDL_Window *w, const SDL_Rect *rects,
 static void farewell(int status)
 {
     static const SDL_Color dim = { 150, 150, 165, 255 };
-    const char *headline = status == 0 ? "Your game is saved."
+    /* status 0 follows a save, but also quitting or dying */
+    const char *headline = status == 0 ? "Until next time."
                                        : "NetHack has stopped.";
     const char *advice = "Press the PS button and close NetHack to leave.";
     SDL_Rect all = { 0, 0, 0, 0 };
@@ -839,7 +1005,6 @@ int main(int argc, char **argv)
     SDL_SetEventFilter(input_filter, NULL);
     for (i = 0; i < SDL_NumJoysticks(); i++)
         SDL_JoystickOpen(i);
-    SDL_AddTimer(30, repeat_tick, NULL);
 #ifdef PS5_SCREENSHOT
     SDL_AddTimer(500, remote_keys, NULL);
 #endif

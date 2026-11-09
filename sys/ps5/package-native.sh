@@ -141,7 +141,7 @@ echo "Bound to the platform layer: ${bound[*]}"
 # the title alive in place of exit().
 wraps="--wrap=SDL_CreateWindow --wrap=SDL_GetWindowSurface"
 wraps+=" --wrap=SDL_UpdateWindowSurface --wrap=SDL_UpdateWindowSurfaceRects"
-wraps+=" --wrap=exit"
+wraps+=" --wrap=exit --wrap=SDL_PollEvent"
 # native_shims.c resolves relative open() paths against /app0, like
 # ps5-opengl's runtime does for fopen().
 wraps+=" --wrap=open"

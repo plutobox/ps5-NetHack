@@ -33,6 +33,9 @@ boolean curs_nonselect_menu_action(WINDOW *win, void *menu, int how,
 #define PS5_DIALOG_MENU 1
 #define PS5_DIALOG_BUTTONS 2
 extern int ps5_curses_dialog;
+/* sys/ps5/ps5main.c: the system's on-screen keyboard; 1 typed, 0
+   cancelled, -1 unavailable */
+extern int ps5_text_input(const char *prompt, char *answer, int size);
 #endif
 
 #endif /* CURSDIAL_H */

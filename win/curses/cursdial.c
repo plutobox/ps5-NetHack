@@ -138,6 +138,20 @@ curses_line_input_dialog(
        re-activate them now that input is being requested */
     curses_got_input();
 
+#ifdef PS5_CONTROLLER
+    /* a controller has no keys to type with: the system's on-screen
+       keyboard (sys/ps5/ps5main.c), unless it cannot be opened */
+    switch (ps5_text_input(prompt, answer, buffer)) {
+    case 1: /* typed */
+        return;
+    case 0: /* cancelled: as ESC at the start of a typed answer */
+        Strcpy(answer, "\033");
+        return;
+    default:
+        break;
+    }
+#endif
+
     if (buffer > (int) sizeof input)
         buffer = (int) sizeof input;
     /* +1: space between prompt and answer; buffer already accounts for \0 */

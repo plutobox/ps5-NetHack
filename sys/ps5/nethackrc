@@ -13,3 +13,6 @@ OPTIONS=symset:DECgraphics
 # for where you stand.
 OPTIONS=extmenu,!tutorial
 BIND=^Q:herecmdmenu
+# Keep the files a game needs to be recovered: closing the native title
+# from the home screen ends it without saving.
+OPTIONS=checkpoint

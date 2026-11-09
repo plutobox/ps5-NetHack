@@ -221,6 +221,16 @@ getlock(void)
                 fq_lock = fqname(gl.lock, LEVELPREFIX, 0);
                 goto gotlock;
             } else {
+#ifdef PS5_CONTROLLER
+                /* a console player cannot clear the old game by hand:
+                   offer a new one rather than ending here every time
+                   (asked as the Destroy/Recover question just was) */
+                if (yn_function("Couldn't recover the old game.  "
+                                "Start a new one?", ynchars, 'y', FALSE)
+                        == 'y'
+                    && eraseoldlocks())
+                    goto gotlock;
+#endif
                 unlock_file(HLOCK);
                 error("Couldn't recover old game.");
             }
