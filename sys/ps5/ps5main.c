@@ -134,7 +134,16 @@ static void push_key(SDL_Keycode sym)
     }
 }
 
-/* Held, these repeat: walking, and scrolling through menus. */
+#ifdef PS5_CONTROLLER
+/* What the controller is driving (win/curses/cursmisc.c); the values are
+   PS5_DIALOG_ and PS5_CONTEXT_ in win/curses/cursdial.h. */
+int ps5_curses_context(void);
+#define CONTEXT_MENU 1      /* a menu, pick any */
+#define CONTEXT_PICK 8      /* a menu, pick one */
+#endif
+
+/* Held, these repeat: walking, scrolling through menus, and in menus
+ * (only: on the map they search and rest) L2 and R2 setting a count. */
 static int is_movement(SDL_Keycode k)
 {
     switch (k) {
@@ -143,9 +152,27 @@ static int is_movement(SDL_Keycode k)
     case SDLK_UP: case SDLK_DOWN: case SDLK_LEFT: case SDLK_RIGHT:
     case SDLK_KP_7: case SDLK_KP_9: case SDLK_KP_1: case SDLK_KP_3:
         return 1;
+#ifdef PS5_CONTROLLER
+    case SDLK_F9: case SDLK_F10: {
+        int context = ps5_curses_context();
+
+        return context == CONTEXT_MENU || context == CONTEXT_PICK;
+    }
+#endif
     default:
         return 0;
     }
+}
+
+/* Stop any repeat, as when the controller goes away with a button held:
+ * otherwise the hero would walk on forever. */
+static void cancel_repeat(void)
+{
+    SDL_LockMutex(rep_lock);
+    rep_key = 0;
+    SDL_UnlockMutex(rep_lock);
+    stick_x = stick_y = 0;
+    stick_key = 0;
 }
 
 static void start_repeat(SDL_Keycode k)
@@ -185,12 +212,19 @@ static int repeat_due(void)
  * been read, so a released button is never taken for a held one.  A timer
  * thread would repeat whenever a slow frame kept the release unread, and a
  * single press on the d-pad moved twice. */
+static void refresh_hints(void);
+
 int __real_SDL_PollEvent(SDL_Event *e);
 int __wrap_SDL_PollEvent(SDL_Event *e)
 {
     if (__real_SDL_PollEvent(e))
         return 1;
-    return repeat_due() ? __real_SDL_PollEvent(e) : 0;
+    if (repeat_due())
+        return __real_SDL_PollEvent(e);
+    /* waiting for a key: the screen was last drawn mid-turn, perhaps for
+     * another context than the one now asking */
+    refresh_hints();
+    return 0;
 }
 #else
 /* Timer thread for the payload. */
@@ -248,9 +282,14 @@ static int SDLCALL input_filter(void *unused, SDL_Event *e)
         }
         return 0;
     }
+    case SDL_JOYDEVICEREMOVED:
+        /* switched off or out of charge: let go of what it was holding.
+         * (Not closed here: the filter can run while SDL is still walking
+         * its list of joysticks.) */
+        cancel_repeat();
+        return 0;
     case SDL_JOYHATMOTION:
     case SDL_JOYBALLMOTION:
-    case SDL_JOYDEVICEREMOVED:
         return 0; /* d-pad arrives as buttons too; ignore the hat */
     default:
         return 1;
@@ -544,10 +583,6 @@ static void upload_rect(const SDL_Rect *r)
 
 /* ---- The button hint bar, below PDCurses's lines ----------------------- */
 
-/* What the controller is driving (win/curses/cursmisc.c): 0 the map, 1 a
- * menu, 2 a button prompt, 3 picking a spot, 4 another prompt. */
-int ps5_curses_context(void);
-
 #define HINT_BAR_HEIGHT 56
 
 static SDL_Surface *hint_font; /* its own copy: PDCurses recolours its font */
@@ -567,16 +602,19 @@ struct hint {
 #define OTHER(glyph) glyph, { 200, 200, 210, 255 }
 #define END_HINTS { 0, { 0, 0, 0, 0 }, NULL, NULL }
 
+/* One set for each context ps5_curses_context() reports. */
 static const struct hint map_hints[] = {
     { CROSS, NULL, "Actions" },     { TRIANGLE, NULL, "Inventory" },
     { OTHER(0xF0), NULL, "Commands" }, { OTHER(0), "L1 R1", "Stairs" },
     { OTHER(0), "L2", "Search" },  { OTHER(0), "R2", "Rest" },
-    { OTHER(0x16), NULL, "Look" }, { OTHER(0), "Create", "Save" }, END_HINTS
+    { OTHER(0x16), NULL, "Look here" }, { OTHER(0), "L3", "Look at" },
+    { OTHER(0), "R3", "Help" },    { OTHER(0), "Create", "Save" }, END_HINTS
 };
-static const struct hint menu_hints[] = {
+static const struct hint menu_hints[] = { /* pick any number */
     { OTHER(0x12), NULL, "Move" }, { CROSS, NULL, "Select" },
     { SQUARE, NULL, "Toggle" },    { TRIANGLE, NULL, "Done" },
-    { CIRCLE, NULL, "Back" },      { OTHER(0), "L1 R1", "Page" }, END_HINTS
+    { OTHER(0), "L2 R2", "Count" }, { OTHER(0), "L1 R1", "Page" },
+    { CIRCLE, NULL, "Back" },      END_HINTS
 };
 static const struct hint button_hints[] = {
     { OTHER(0x1D), NULL, "Choose" }, { CROSS, NULL, "Confirm" },
@@ -584,11 +622,50 @@ static const struct hint button_hints[] = {
 };
 static const struct hint position_hints[] = {
     { OTHER(0x12), NULL, "Move cursor" }, { CROSS, NULL, "Select" },
+    { TRIANGLE, NULL, "Yourself" }, { OTHER(0), "L1 R1", "Things" },
+    { OTHER(0), "L2 R2", "Monsters" }, { OTHER(0), "R3", "Help" },
     { CIRCLE, NULL, "Cancel" }, END_HINTS
 };
 static const struct hint prompt_hints[] = {
     { CROSS, NULL, "Confirm" }, { TRIANGLE, NULL, "List" },
     { SQUARE, NULL, "All" },    { CIRCLE, NULL, "Cancel" }, END_HINTS
+};
+static const struct hint direction_hints[] = {
+    { OTHER(0x12), NULL, "Direction" }, { CROSS, NULL, "Here" },
+    { OTHER(0), "L1 R1", "Up / Down" }, { CIRCLE, NULL, "Cancel" }, END_HINTS
+};
+static const struct hint more_hints[] = {
+    { CROSS, NULL, "Continue" }, { CIRCLE, NULL, "Skip messages" }, END_HINTS
+};
+static const struct hint text_hints[] = {
+    { OTHER(0x12), NULL, "Page" }, { CROSS, NULL, "Close" }, END_HINTS
+};
+static const struct hint pick_hints[] = { /* pick one */
+    { OTHER(0x12), NULL, "Move" }, { CROSS, NULL, "Select" },
+    { OTHER(0), "L2 R2", "Count" }, { OTHER(0), "L1 R1", "Page" },
+    { CIRCLE, NULL, "Back" }, END_HINTS
+};
+static const struct hint list_hints[] = {
+    { CROSS, NULL, "Choose" }, { SQUARE, NULL, "Everything" },
+    { CIRCLE, NULL, "Cancel" }, END_HINTS
+};
+static const struct hint keyboard_hints[] = {
+    { OTHER(0x12), NULL, "Choose key" }, { CROSS, NULL, "Type" },
+    { SQUARE, NULL, "Delete" }, { TRIANGLE, NULL, "Space" },
+    { OTHER(0xF0), NULL, "Done" }, { CIRCLE, NULL, "Cancel" }, END_HINTS
+};
+static const struct hint *const hint_sets[] = {
+    map_hints,       /* 0 the map */
+    menu_hints,      /* 1 a menu, pick any */
+    button_hints,    /* 2 a row of buttons */
+    position_hints,  /* 3 picking a spot */
+    prompt_hints,    /* 4 another prompt */
+    direction_hints, /* 5 a direction */
+    more_hints,      /* 6 >> */
+    text_hints,      /* 7 text to read */
+    pick_hints,      /* 8 a menu, pick one */
+    list_hints,      /* 9 a prompt with a list to pick from */
+    keyboard_hints,  /* 10 the keyboard drawn in-game */
 };
 
 static const SDL_Color hint_background = { 14, 16, 26, 255 };
@@ -625,21 +702,24 @@ static int hint_width(const struct hint *h)
 /* The bar for what is on screen, centred, with a rule above it. */
 static void draw_hints(int context)
 {
-    static const struct hint *const sets[] = {
-        map_hints, menu_hints, button_hints, position_hints, prompt_hints
-    };
-    const struct hint *set = sets[context >= 0 && context <= 4 ? context : 0];
+    const struct hint *set =
+        hint_sets[context >= 0 && context < (int) SDL_arraysize(hint_sets)
+                      ? context : 0];
     const struct hint *h;
     SDL_Rect bar = { 0, hint_top, screen->w, screen->h - hint_top };
     SDL_Rect rule = { 0, hint_top, screen->w, 2 };
-    int gap = 48, total = 0, x, y = hint_top + (bar.h - 32) / 2 + 1;
+    int gap = 48, count = 0, total = 0, x, y = hint_top + (bar.h - 32) / 2 + 1;
 
     SDL_FillRect(screen, &bar, SDL_MapRGB(screen->format, hint_background.r,
                                           hint_background.g,
                                           hint_background.b));
     SDL_FillRect(screen, &rule, SDL_MapRGB(screen->format, 50, 56, 84));
-    for (h = set; h->action; h++)
-        total += hint_width(h) + (h != set ? gap : 0);
+    for (h = set; h->action; h++, count++)
+        total += hint_width(h);
+    /* closer together if a long bar would not fit, keeping a margin */
+    if (count > 1 && total + gap * (count - 1) > screen->w - 64)
+        gap = SDL_max(16, (screen->w - 64 - total) / (count - 1));
+    total += gap * (count - 1);
     x = (screen->w - total) / 2;
     for (h = set; h->action; h++) {
         if (h != set)
@@ -669,10 +749,26 @@ static void present(void)
     SDL_GL_SwapWindow(window);
 #ifdef PS5_SCREENSHOT
     /* Debug builds: the last frame shown, readable over FTP; written whole
-     * and renamed, so a reader never sees half a file. */
-    if (SDL_SaveBMP(screen, "/data/nethack-screen.tmp") == 0)
-        rename("/data/nethack-screen.tmp", "/data/nethack-screen.bmp");
+     * and renamed, so a reader never sees half a file.  At most every three
+     * seconds, as a save takes seconds: every frame would slow the game to
+     * a crawl (and PDCurses's timeouts, which count its 50 ms naps). */
+    {
+        static Uint32 saved;
+
+        if (!saved || SDL_TICKS_PASSED(SDL_GetTicks(), saved + 3000)) {
+            if (SDL_SaveBMP(screen, "/data/nethack-screen.tmp") == 0)
+                rename("/data/nethack-screen.tmp", "/data/nethack-screen.bmp");
+            saved = SDL_GetTicks();
+        }
+    }
 #endif
+}
+
+/* Show the hints for what is asking now, if the last frame showed others. */
+static void refresh_hints(void)
+{
+    if (hint_font && ps5_curses_context() != hint_context)
+        present();
 }
 
 /* ---- Typing: the system's on-screen keyboard (IME dialog) -------------- */
@@ -818,15 +914,17 @@ int ps5_text_input(const char *prompt, char *answer, int size)
 /* Debug builds: type the contents of /data/nethack-input.txt, then remove
  * it, so the game can be driven over FTP.  "\n" is Return, and ^ escapes
  * the controller: ^[ Circle (Escape), ^X Cross, ^S Square, ^T Triangle,
- * ^O Options, ^C Create, ^U ^D ^L ^R the d-pad, ^1 ^2 L1 and R1. */
+ * ^O Options, ^C Create, ^P the touchpad, ^U ^D ^L ^R the d-pad, ^1 ^2 L1
+ * and R1, ^3 ^4 L2 and R2, ^5 ^6 L3 and R3. */
 static Uint32 remote_keys(Uint32 interval, void *unused)
 {
     static const struct { char code; SDL_Keycode sym; } escapes[] = {
         { '[', SDLK_ESCAPE }, { 'X', SDLK_F1 }, { 'S', SDLK_F2 },
         { 'T', SDLK_F3 },     { 'O', SDLK_F4 }, { 'C', SDLK_F5 },
-        { 'U', SDLK_UP },
+        { 'P', SDLK_F6 },     { 'U', SDLK_UP },
         { 'D', SDLK_DOWN },   { 'L', SDLK_LEFT }, { 'R', SDLK_RIGHT },
-        { '1', SDLK_F7 },     { '2', SDLK_F8 },
+        { '1', SDLK_F7 },     { '2', SDLK_F8 },   { '3', SDLK_F9 },
+        { '4', SDLK_F10 },    { '5', SDLK_F11 },  { '6', SDLK_F12 },
     };
     FILE *fp = fopen("/data/nethack-input.txt", "r");
     char keys[256];
@@ -864,6 +962,28 @@ SDL_Window *__wrap_SDL_CreateWindow(const char *title, int x, int y, int w,
 {
     (void) title, (void) x, (void) y, (void) w, (void) h, (void) flags;
     return window;
+}
+
+/* PDCurses calls this before each look for a key, to redraw the window
+ * after it was hidden.  Its own takes the first event off the queue and,
+ * if it is not such a redraw, pushes it back on at the end: with more than
+ * one press waiting, the presses come out of order ("Ehi" typed as "pdd").
+ * This one only looks.  (The title's one window is never hidden.) */
+int __wrap_SDL_UpdateWindowSurface(SDL_Window *w);
+
+void __wrap_PDC_pump_and_peep(void)
+{
+    SDL_Event e;
+
+    SDL_PumpEvents();
+    if (SDL_PeepEvents(&e, 1, SDL_PEEKEVENT, SDL_WINDOWEVENT,
+                       SDL_WINDOWEVENT) == 1
+        && (e.window.event == SDL_WINDOWEVENT_RESTORED
+            || e.window.event == SDL_WINDOWEVENT_EXPOSED
+            || e.window.event == SDL_WINDOWEVENT_SHOWN)) {
+        SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_WINDOWEVENT, SDL_WINDOWEVENT);
+        __wrap_SDL_UpdateWindowSurface(window);
+    }
 }
 
 SDL_Surface *__wrap_SDL_GetWindowSurface(SDL_Window *w)

@@ -13,6 +13,11 @@ OPTIONS=symset:DECgraphics
 # for where you stand.
 OPTIONS=extmenu,!tutorial
 BIND=^Q:herecmdmenu
+# "What do you want to eat?" and the like open a menu of the likely items
+# straight away, rather than asking for an inventory letter.
+OPTIONS=force_invmenu
 # Keep the files a game needs to be recovered: closing the native title
-# from the home screen ends it without saving.
-OPTIONS=checkpoint
+# from the home screen ends it without saving.  idlecheckpoint brings them
+# up to date whenever the game has waited ten seconds for a command, so a
+# recovered game resumes where it was left, even one restored from a save.
+OPTIONS=checkpoint,idlecheckpoint

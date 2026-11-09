@@ -41,7 +41,13 @@ curses_getch(void)
 
     if (iflags.debug_fuzzer) {
         ch = randomkey();
-    } else if (iflags.idlecheckpoint) {
+    } else if (iflags.idlecheckpoint
+#ifdef PS5_CONTROLLER
+               /* PS5: prompts and menus read keys here too; checkpoint
+                  only between commands, when the game state is whole */
+               && program_state.input_state == commandInp
+#endif
+               ) {
         boolean done_a_checkpoint = FALSE;
 
         timeout(IDLECHECKPOINT_WAIT_TIME * 1000);
@@ -824,12 +830,23 @@ Currently this is limited to arrow keys, but this may be expanded. */
    asking.  On the map: Cross and Square the actions for where you stand
    (^Q, bound to #herecmdmenu in the port's .nethackrc), Triangle the
    inventory, Options the command menu, Create save, the touchpad look
-   here, L1/R1 the stairs, L2 search, R2 rest, L3 look at, R3 help. */
+   here, L1/R1 the stairs, L2 search, R2 rest, L3 look at, R3 help.
+   Returns the key NetHack should see, or -1 to convert the key as usual. */
 static int
 ps5_pad_key(int key)
 {
     int button = (key >= KEY_F(1) && key <= KEY_F(12)) ? key - KEY_F0 : 0;
 
+    if (ps5_curses_dialog == PS5_DIALOG_MORE) {
+        /* >>: Cross, Square or Triangle continue and Circle (Escape) skips
+           the rest of the turn's messages.  Anything else is ignored, as a
+           direction held to walk must not dismiss a message unread. */
+        if (button >= 1 && button <= 3)
+            return '\n';
+        if (button || key >= KEY_MIN)
+            return key; /* not one of curses_block()'s answers */
+        return -1;
+    }
     if (!button) {
         /* the d-pad answers direction prompts as well as moving: curses
            would otherwise reject arrows outside of command input */
@@ -859,11 +876,36 @@ ps5_pad_key(int key)
         switch (button) {
         case 1: return '.';  /* Cross: pick this spot */
         case 2: return ',';  /* Square: pick, without describing it */
-        case 6: return ':';
-        case 11: return ';';
+        case 3: return '@';  /* Triangle: back to yourself */
+        case 6: return ':';  /* touchpad: pick, describing it in full */
+        case 7: return 'A';  /* L1/R1: previous/next thing of interest */
+        case 8: return 'a';
+        case 9: return 'M';  /* L2/R2: previous/next monster */
+        case 10: return 'm';
+        case 11: return ';'; /* L3: pick, once */
+        case 12: return '?'; /* R3: help */
         default: return '\033';
         }
-    default: /* a prompt, such as "What do you want to eat?" */
+    case getdirInp: /* "In what direction?" */
+        switch (button) {
+        case 1: return '.';  /* Cross: here, at yourself */
+        case 7: return '<';  /* L1/R1: up, down */
+        case 8: return '>';
+        default: return '\033';
+        }
+    default:
+        if (ps5_curses_dialog == PS5_DIALOG_LIST) {
+            /* "What do you want to eat? [fg or ?*]": Return would answer
+               "never mind"; the buttons open the lists instead */
+            switch (button) {
+            case 1: /* Cross */
+            case 3: /* Triangle: the likely choices, as a menu */
+                return '?';
+            case 2: return '*'; /* Square: everything */
+            default: return '\033';
+            }
+        }
+        /* another prompt */
         switch (button) {
         case 1: return '\n'; /* Cross: confirm */
         case 2: return '*';  /* Square: everything */
@@ -873,17 +915,18 @@ ps5_pad_key(int key)
     }
 }
 
-/* What the controller is driving, for sys/ps5's button hints: 0 the map,
-   1 a menu, 2 a button prompt, 3 picking a spot, 4 another prompt. */
+/* What the controller is driving, for sys/ps5's button hints: one of the
+   PS5_DIALOG_ or PS5_CONTEXT_ values in cursdial.h. */
 int
 ps5_curses_context(void)
 {
     if (ps5_curses_dialog)
         return ps5_curses_dialog;
     switch (program_state.input_state) {
-    case commandInp: return 0;
-    case getposInp: return 3;
-    default: return 4;
+    case commandInp: return PS5_CONTEXT_MAP;
+    case getposInp: return PS5_CONTEXT_GETPOS;
+    case getdirInp: return PS5_CONTEXT_GETDIR;
+    default: return PS5_CONTEXT_PROMPT;
     }
 }
 #endif /* PS5_CONTROLLER */

@@ -109,6 +109,10 @@ static boolean ps5_menu_key(WINDOW *win, nhmenu *menu, int how, int key,
 static boolean ps5_buttons_fit(const char *choices);
 static int ps5_button_dialog(const char *prompt, const char *choices,
                              char def);
+static boolean ps5_offers_list(const char *prompt);
+static void ps5_end_menu(int outer_dialog);
+static void ps5_keyboard_dialog(const char *prompt, char *answer, int size);
+static long ps5_count; /* a menu's count, set with L2 and R2; 0 for none */
 #endif
 
 /* maximum number of selector entries per page; if '$' is present
@@ -147,8 +151,9 @@ curses_line_input_dialog(
     case 0: /* cancelled: as ESC at the start of a typed answer */
         Strcpy(answer, "\033");
         return;
-    default:
-        break;
+    default: /* no system keyboard: one drawn here, played with the pad */
+        ps5_keyboard_dialog(prompt, answer, buffer);
+        return;
     }
 #endif
 
@@ -252,6 +257,9 @@ curses_character_input_dialog(const char *prompt, const char *choices,
 #ifdef PDCURSES
     int x, y;
 #endif
+#ifdef PS5_CONTROLLER
+    int outer_dialog;
+#endif
 
     /* if messages were being suppressed for the remainder of the turn,
        re-activate them now that input is being requested */
@@ -278,6 +286,10 @@ curses_character_input_dialog(const char *prompt, const char *choices,
             }
         }
     }
+    outer_dialog = ps5_curses_dialog;
+    if (choices == NULL && program_state.input_state == otherInp
+        && ps5_offers_list(prompt))
+        ps5_curses_dialog = PS5_DIALOG_LIST;
 #endif
 
     if (svm.moves > 0 || !program_state.beyond_savefile_load) {
@@ -362,7 +374,11 @@ curses_character_input_dialog(const char *prompt, const char *choices,
     curs_set(1);
 #endif
     while (1) {
-#ifdef PDCURSES
+#if defined(PDCURSES) && defined(PS5_CONTROLLER)
+        /* as the menus read keys: PDCurses drops the arrows and function
+           keys the controller sends on a window not in keypad mode */
+        answer = curses_getch();
+#elif defined(PDCURSES)
         if (WIN_MESSAGE != WIN_ERR)
             answer = wgetch(message_window);
         else
@@ -435,6 +451,9 @@ curses_character_input_dialog(const char *prompt, const char *choices,
         curses_clear_unhighlight_message_window();
     }
 
+#ifdef PS5_CONTROLLER
+    ps5_curses_dialog = outer_dialog;
+#endif
     return answer;
 }
 
@@ -1582,10 +1601,16 @@ menu_get_selections(WINDOW *win, nhmenu *menu, int how)
     int ps5_outer_dialog = ps5_curses_dialog;
 #endif
 
+#ifdef PS5_CONTROLLER
+    /* before the menu is drawn, so the hints change with it */
+    ps5_curses_dialog = how == PICK_NONE ? PS5_DIALOG_TEXT
+                        : how == PICK_ONE ? PS5_DIALOG_PICK
+                        : PS5_DIALOG_MENU;
+    ps5_count = 0L;
+#endif
     activemenu = win;
     menu_display_page(win, menu, curpage, selectors, groupaccels);
 #ifdef PS5_CONTROLLER
-    ps5_curses_dialog = PS5_DIALOG_MENU;
     if (how != PICK_NONE) {
         cursor = ps5_page_item(menu, curpage, FALSE);
         ps5_draw_cursor(win, menu, cursor);
@@ -1610,7 +1635,7 @@ menu_get_selections(WINDOW *win, nhmenu *menu, int how)
                          &num_selected, &dismiss)) {
             if (num_selected == -1) {
                 activemenu = NULL;
-                ps5_curses_dialog = ps5_outer_dialog;
+                ps5_end_menu(ps5_outer_dialog);
                 return -1;
             }
             continue;
@@ -1682,7 +1707,7 @@ menu_get_selections(WINDOW *win, nhmenu *menu, int how)
             if (num_selected == -1) {
                 activemenu = NULL;
 #ifdef PS5_CONTROLLER
-                ps5_curses_dialog = ps5_outer_dialog;
+                ps5_end_menu(ps5_outer_dialog);
 #endif
                 return -1;
             }
@@ -1751,7 +1776,7 @@ menu_get_selections(WINDOW *win, nhmenu *menu, int how)
 
     activemenu = NULL;
 #ifdef PS5_CONTROLLER
-    ps5_curses_dialog = ps5_outer_dialog;
+    ps5_end_menu(ps5_outer_dialog);
 #endif
     return num_selected;
 }
@@ -1890,8 +1915,42 @@ menu_max_height(void)
 #define PS5_CROSS KEY_F(1)
 #define PS5_SQUARE KEY_F(2)
 #define PS5_TRIANGLE KEY_F(3)
+#define PS5_OPTIONS KEY_F(4)
 #define PS5_L1 KEY_F(7)
 #define PS5_R1 KEY_F(8)
+#define PS5_L2 KEY_F(9)
+#define PS5_R2 KEY_F(10)
+
+/* Show the menu's count, as typed digits would be, or take it away. */
+static void
+ps5_show_count(WINDOW *win)
+{
+    char buf[QBUFSZ];
+
+    if (ps5_count > 0L) {
+        Sprintf(buf, "Count: %ld", ps5_count);
+        curses_count_window(buf);
+    } else {
+        curses_count_window(NULL);
+        touchwin(win);
+        wrefresh(win);
+    }
+}
+
+/* Select an entry, with the count if one is set ("drop 3 of the 12
+   arrows"), and clear the count for the next. */
+static void
+ps5_select_counted(WINDOW *win, nhmenu_item *item, menu_op op, int page)
+{
+    if (ps5_count > 0L) {
+        menu_select_deselect(win, item, SELECT, page);
+        item->count = ps5_count;
+        ps5_count = 0L;
+        ps5_show_count(win);
+    } else {
+        menu_select_deselect(win, item, op, page);
+    }
+}
 
 /* The first (or last) selectable entry on a menu page, if any. */
 static nhmenu_item *
@@ -1996,19 +2055,29 @@ ps5_menu_key(WINDOW *win, nhmenu *menu, int how, int key,
             ps5_draw_cursor(win, menu, *cursor);
         }
         return TRUE;
+    case PS5_L2:
+    case PS5_R2:
+        /* fewer, more: a count for the next entry selected; held, these
+           repeat (sys/ps5/ps5main.c) */
+        if (key == PS5_R2)
+            ps5_count++;
+        else if (ps5_count > 0L)
+            ps5_count--;
+        ps5_show_count(win);
+        return TRUE;
     case PS5_CROSS:
     case PS5_SQUARE:
         if (!*cursor)
             return TRUE;
         if (how == PICK_ONE) {
             menu_clear_selections(menu);
-            menu_select_deselect(win, *cursor, SELECT, page);
+            ps5_select_counted(win, *cursor, SELECT, page);
             *num_selected = 1;
             *dismiss = TRUE;
             return TRUE;
         }
         /* PICK_ANY: toggle this entry and move on, as with a checklist */
-        menu_select_deselect(win, *cursor, INVERT, page);
+        ps5_select_counted(win, *cursor, INVERT, page);
         if (key == PS5_CROSS) {
             next = ps5_step_cursor(menu, *cursor, 1);
             if (next->page_num != page) {
@@ -2024,7 +2093,7 @@ ps5_menu_key(WINDOW *win, nhmenu *menu, int how, int key,
         /* done: accept what is selected (PICK_ONE: the highlighted entry) */
         if (how == PICK_ONE && *cursor) {
             menu_clear_selections(menu);
-            menu_select_deselect(win, *cursor, SELECT, page);
+            ps5_select_counted(win, *cursor, SELECT, page);
             *num_selected = 1;
         }
         *dismiss = TRUE;
@@ -2034,6 +2103,151 @@ ps5_menu_key(WINDOW *win, nhmenu *menu, int how, int key,
            here; ignore it rather than let it select or dismiss */
         return key >= KEY_F(1) && key <= KEY_F(15);
     }
+}
+
+/* The keys of the controller's keyboard: what NetHack's text prompts need
+   (names, engravings, wishes), thirteen to a row. */
+static const char *const ps5_keys[] = {
+    "abcdefghijklm", "nopqrstuvwxyz", "ABCDEFGHIJKLM", "NOPQRSTUVWXYZ",
+    "0123456789-'.", ",!?:;()/\"#&+*",
+};
+#define PS5_KEY_ROWS ((int) SIZE(ps5_keys))
+#define PS5_KEY_COLS 13
+
+/* A line of text typed on a keyboard drawn on screen, for when the
+   system's own cannot open: the d-pad picks a key, Cross types it, Square
+   deletes, Triangle is a space, Options finishes and Circle cancels.  The
+   answer is as getlin()'s: "\033" when cancelled. */
+static void
+ps5_keyboard_dialog(const char *prompt, char *answer, int size)
+{
+    WINDOW *win;
+    char text[BUFSZ];
+    int maxlen = min(size, BUFSZ) - 1, len = 0, row = 0, col = 0;
+    int width = PS5_KEY_COLS * 4 + 2, fieldw = width - 4;
+    int lines = curses_num_lines(prompt, width - 2);
+    int height = lines + 10, outer = ps5_curses_dialog;
+    int key, r, c, i, done = 0; /* 1 finished, -1 cancelled */
+    char *line;
+
+    text[0] = '\0';
+    ps5_curses_dialog = PS5_DIALOG_KEYBOARD;
+    win = curses_create_window(TEXT_WIN, width, height, CENTER);
+    curses_set_wid_colors(TEXT_WIN, win);
+    for (i = 0; i < lines; i++) {
+        line = curses_break_str(prompt, width - 2, i + 1);
+        mvwaddstr(win, i + 1, 2, line);
+        free(line);
+    }
+    curs_set(0);
+    while (!done) {
+        /* the end of the text, if it is longer than the field */
+        const char *shown = text + max(0, len - (fieldw - 1));
+
+        mvwprintw(win, lines + 2, 2, "%s_%*s", shown,
+                  fieldw - 1 - (int) strlen(shown), "");
+        for (r = 0; r < PS5_KEY_ROWS; r++)
+            for (c = 0; c < PS5_KEY_COLS; c++) {
+                boolean here = (r == row && c == col);
+
+                if (here)
+                    curses_toggle_color_attr(win, HIGHLIGHT_COLOR, A_REVERSE,
+                                             ON);
+                mvwprintw(win, lines + 4 + r, 2 + c * 4, " %c ",
+                          ps5_keys[r][c]);
+                if (here)
+                    curses_toggle_color_attr(win, HIGHLIGHT_COLOR, A_REVERSE,
+                                             OFF);
+            }
+        wrefresh(win);
+
+        key = curses_getch();
+        switch (key) {
+        case ERR:
+            iflags.term_gone = 1;
+            done = -1;
+            break;
+        case KEY_UP: case KEY_A1: case KEY_A3:
+            row = (row + PS5_KEY_ROWS - 1) % PS5_KEY_ROWS;
+            break;
+        case KEY_DOWN: case KEY_C1: case KEY_C3:
+            row = (row + 1) % PS5_KEY_ROWS;
+            break;
+        default:
+            break;
+        }
+        switch (key) {
+        case KEY_LEFT: case KEY_A1: case KEY_C1:
+            col = (col + PS5_KEY_COLS - 1) % PS5_KEY_COLS;
+            break;
+        case KEY_RIGHT: case KEY_A3: case KEY_C3:
+            col = (col + 1) % PS5_KEY_COLS;
+            break;
+        case PS5_CROSS:
+        case PS5_TRIANGLE:
+            if (len < maxlen) {
+                text[len++] = key == PS5_CROSS ? ps5_keys[row][col] : ' ';
+                text[len] = '\0';
+            }
+            break;
+        case PS5_SQUARE:
+        case KEY_BACKSPACE:
+        case '\b':
+        case '\177':
+            if (len > 0)
+                text[--len] = '\0';
+            break;
+        case PS5_OPTIONS:
+        case '\n':
+        case '\r':
+            done = 1;
+            break;
+        case '\033':
+            done = -1;
+            break;
+        default:
+            /* a key typed on a keyboard, if one is there */
+            if (key >= ' ' && key < '\177' && len < maxlen) {
+                text[len++] = (char) key;
+                text[len] = '\0';
+            }
+            break;
+        }
+    }
+    curses_destroy_win(win);
+    ps5_curses_dialog = outer;
+    if (done < 0)
+        Strcpy(answer, "\033");
+    else
+        Strcpy(answer, text);
+}
+
+/* A menu is closing: drop a count it did not use, and give the hints back
+   to whatever opened it. */
+static void
+ps5_end_menu(int outer_dialog)
+{
+    if (ps5_count > 0L) {
+        ps5_count = 0L;
+        curses_count_window(NULL);
+    }
+    ps5_curses_dialog = outer_dialog;
+}
+
+/* A prompt whose answer can be picked from a list, "What do you want to
+   eat? [fg or ?*]" or "Cast which spell? [a-c *?]": the last [...] holds
+   a '?' or '*'. */
+static boolean
+ps5_offers_list(const char *prompt)
+{
+    const char *open = strrchr(prompt, '['), *close, *c;
+
+    if (!open || !(close = strchr(open, ']')))
+        return FALSE;
+    for (c = open + 1; c < close; c++)
+        if (*c == '?' || *c == '*')
+            return TRUE;
+    return FALSE;
 }
 
 /* Single-letter prompts that read well as a row of buttons. */

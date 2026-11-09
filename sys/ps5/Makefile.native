@@ -37,13 +37,15 @@ SDLINC := -isystem $(PS5_SDL2_PREFIX)/include/SDL2 -D_THREAD_SAFE
 # instead of link() (NO_FILE_LINKS), and saves compressed with zlib
 # in-process instead of by forking compress(1).  A game ended by closing the
 # title from the home screen is recovered in-game next time (SELF_RECOVER: a
-# title cannot run the recover program).  PS5_CONTROLLER gives the curses
-# interface a highlight bar in menus and button prompts (win/curses).
+# title cannot run the recover program); IDLECHECKPOINT keeps what it
+# recovers up to date, saving the state whenever the game has waited ten
+# seconds for a command.  PS5_CONTROLLER gives the curses interface a
+# highlight bar in menus and button prompts (win/curses).
 NHDEFS := -DNOTTYGRAPHICS -DCURSES_GRAPHICS -DDEFAULT_WINDOW_SYS=\"curses\" \
           -DPDCURSES -DNOMAIL -DNOSUSPEND -DNOSHELL -DNOPANICTRACE \
           -DHACKDIR=\"/app0\" -DVAR_PLAYGROUND=\"/download0/nethack\" \
           -DNO_FILE_LINKS -DLOCKDIR=\"/download0/nethack\" -DZLIB_COMP \
-          -DSELF_RECOVER -DPS5_CONTROLLER
+          -DSELF_RECOVER -DIDLECHECKPOINT -DPS5_CONTROLLER
 NHINC := -I$(OUT)/gen -I$(NH)/include -I$(LUA) -I$(PDC) \
          -isystem $(PS5_PACBREW_PREFIX)/include
 

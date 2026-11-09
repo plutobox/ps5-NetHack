@@ -29,9 +29,20 @@ boolean curs_nonselect_menu_action(WINDOW *win, void *menu, int how,
                                                                   NONNULLPTRS;
 
 #ifdef PS5_CONTROLLER
-/* which controller-driven dialog is open, for sys/ps5's button hints */
-#define PS5_DIALOG_MENU 1
-#define PS5_DIALOG_BUTTONS 2
+/* What the controller is driving, for sys/ps5's button hints (the numbers
+   are shared with sys/ps5/ps5main.c).  The PS5_DIALOG_s are set while one
+   is open; the others follow from program_state.input_state. */
+#define PS5_CONTEXT_MAP 0
+#define PS5_DIALOG_MENU 1      /* a menu to pick several from */
+#define PS5_DIALOG_BUTTONS 2   /* a question as a row of buttons */
+#define PS5_CONTEXT_GETPOS 3   /* picking a spot on the map */
+#define PS5_CONTEXT_PROMPT 4   /* another single-key prompt */
+#define PS5_CONTEXT_GETDIR 5   /* "In what direction?" */
+#define PS5_DIALOG_MORE 6      /* >> (--More--) */
+#define PS5_DIALOG_TEXT 7      /* text to read */
+#define PS5_DIALOG_PICK 8      /* a menu to pick one from */
+#define PS5_DIALOG_LIST 9      /* a prompt that offers a list: [abc or ?*] */
+#define PS5_DIALOG_KEYBOARD 10 /* typing on the keyboard drawn in-game */
 extern int ps5_curses_dialog;
 /* sys/ps5/ps5main.c: the system's on-screen keyboard; 1 typed, 0
    cancelled, -1 unavailable */

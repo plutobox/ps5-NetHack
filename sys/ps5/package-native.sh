@@ -142,6 +142,10 @@ echo "Bound to the platform layer: ${bound[*]}"
 wraps="--wrap=SDL_CreateWindow --wrap=SDL_GetWindowSurface"
 wraps+=" --wrap=SDL_UpdateWindowSurface --wrap=SDL_UpdateWindowSurfaceRects"
 wraps+=" --wrap=exit --wrap=SDL_PollEvent"
+# PDCurses's PDC_pump_and_peep() moves the first queued event to the back
+# of the queue, which reorders presses waiting behind a slow frame;
+# ps5main.c's version only peeks.
+wraps+=" --wrap=PDC_pump_and_peep"
 # native_shims.c resolves relative open() paths against /app0, like
 # ps5-opengl's runtime does for fopen().
 wraps+=" --wrap=open"

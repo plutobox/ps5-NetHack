@@ -18,24 +18,38 @@ backend**.
 Every button shows its meaning in a hint bar at the bottom of the screen,
 which changes with what is on screen.
 
-| Button | On the map | In a menu | In a prompt |
-|---|---|---|---|
-| D-pad / left stick | Move (the stick does diagonals; hold to walk) | Move the highlight | Choose a button |
-| ✕ Cross | Actions for where you stand | Select the highlighted entry | Confirm |
-| ○ Circle | Cancel | Back | Cancel |
-| □ Square | Actions for where you stand | Toggle the entry (pick several) | Everything (`*`) |
-| △ Triangle | Inventory (pick an item for what you can do with it) | Done | List the choices |
-| Options | Command menu, every command described | | |
-| Create | Save | | |
-| L1 / R1 | Go up / down stairs | Previous / next page | |
-| L2 / R2 | Search / rest | | |
-| Touchpad | Look here | | |
-| L3 / R3 | Look at something / help | | |
+| Button | On the map | In a menu | Picking a spot | A direction |
+|---|---|---|---|---|
+| D-pad / left stick | Move (the stick does diagonals; hold to walk) | Move the highlight | Move the cursor | The direction |
+| ✕ Cross | Actions for where you stand | Select the highlighted entry | Select | Here (yourself) |
+| ○ Circle | Cancel | Back | Cancel | Cancel |
+| □ Square | Actions for where you stand | Toggle the entry (pick several) | Select, briefly | |
+| △ Triangle | Inventory (pick an item for what you can do with it) | Done | Back to yourself | |
+| Options | Command menu, every command described | | | |
+| Create | Save | | | |
+| L1 / R1 | Go up / down stairs | Previous / next page | Previous / next thing of interest | Up / down |
+| L2 / R2 | Search / rest | Fewer / more: a count ("drop 5 of the arrows"); hold to count fast | Previous / next monster | |
+| Touchpad | Look here | | Select, describing it in full | |
+| L3 / R3 | Look at something / help | | Select once / help | |
 
-Questions with a few answers ("Really save?", "Old game in progress…")
-appear as a row of buttons. You play under your PSN name. Saves go to the
-title's own storage. If you close the game from the home screen without
-saving, NetHack offers to recover it next time.
+- **Questions** with a few answers ("Really save?", "Old game in
+  progress…") appear as a row of buttons: left and right choose, Cross
+  confirms.
+- **Items**: "What do you want to eat?" and the like open a menu of the
+  likely items at once (`force_invmenu`), with "list everything" at the end.
+- **`>>` (more messages)**: Cross continues; Circle skips the rest of the
+  turn's messages. The d-pad does nothing there, so walking into a message
+  never dismisses it unread.
+- **Text** (names, engravings, wishes): the system keyboard, or, where a
+  title cannot open it, a keyboard drawn in the game: the d-pad picks a key,
+  Cross types it, Square deletes, Triangle is a space, Options finishes and
+  Circle cancels.
+- The hint bar at the bottom always shows what the buttons do right now.
+
+You play under your PSN name. Saves go to the title's own storage. If you
+close the game from the home screen without saving, NetHack offers to
+recover it next time. It resumes where you left it: the game checkpoints
+whenever it has waited ten seconds for a command (`idlecheckpoint`).
 
 ### Build and install
 
@@ -81,10 +95,20 @@ publishes the zip as a release for the catalog.
 - **Locks.** There's no `link()`, and no way to tell whether a lock's
   process is alive. That's why the port uses `NO_FILE_LINKS` and
   `MAXPLAYERS=0` (one game per player name).
-- **Debugging.** Building with `-DPS5_SCREENSHOT` writes each frame to
-  `/data/nethack-screen.bmp` and types the contents of
-  `/data/nethack-input.txt`, so the game can be driven and watched over FTP.
-  The log is `/data/nethack-ps5.log`.
+- **Input order.** PDCurses's SDL port looks for a window redraw by taking
+  the first queued event and pushing it back on at the end, which reorders
+  presses that queue up behind a slow frame. `ps5main.c` wraps
+  `PDC_pump_and_peep` with a version that only peeks. PDCurses also drops
+  arrows and function keys read from a window without keypad mode, so the
+  controller's prompts read keys through `curses_getch()`.
+- **The system keyboard.** libSceImeDialog loads, but `sceKernelDlsym`
+  finds none of its functions from a title (`0x80020003`), so text is typed
+  on the keyboard drawn in the game. `ps5main.c` still tries the system one
+  first.
+- **Debugging.** Building `ps5main.c` with `-DPS5_SCREENSHOT` writes each
+  frame to `/data/nethack-screen.bmp` and types the contents of
+  `/data/nethack-input.txt`, so the game can be driven and watched over FTP
+  (frames then take seconds each). The log is `/data/nethack-ps5.log`.
 
 ## The ELF payload
 

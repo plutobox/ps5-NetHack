@@ -8,6 +8,9 @@
 #include "wincurs.h"
 #include "cursmesg.h"
 #include "curswins.h"
+#ifdef PS5_CONTROLLER
+#include "cursdial.h" /* ps5_curses_dialog */
+#endif
 
 /* defined in sys/<foo>/<foo>tty.c or cursmain.c as last resort;
    set up by curses_init_nhwindows() */
@@ -307,6 +310,9 @@ curses_block(
     int height, width, moreattr, oldcrsr, ret = 0,
         brdroffset = curses_window_has_border(MESSAGE_WIN) ? 1 : 0;
     WINDOW *win = curses_get_nhwin(MESSAGE_WIN);
+#ifdef PS5_CONTROLLER
+    int outer_dialog = ps5_curses_dialog;
+#endif
 
     curses_get_window_size(MESSAGE_WIN, &height, &width);
     if (mx - brdroffset > width - 3) { /* -3: room for ">>_" */
@@ -324,6 +330,9 @@ curses_block(
         prev_x = mx, prev_y = my;
         blink = 0;
     }
+#ifdef PS5_CONTROLLER
+    ps5_curses_dialog = PS5_DIALOG_MORE; /* the hints change as >> shows */
+#endif
     moreattr = !iflags.wc2_guicolor ? (int) A_REVERSE : NONE;
     curses_toggle_color_attr(win, MORECOLOR, moreattr, ON);
     curses_set_wid_colors(MESSAGE_WIN, NULL);
@@ -354,7 +363,11 @@ curses_block(
             ret = '\n';
         /* msgtype=stop should require space/enter rather than any key,
            as we want to prevent YASD from direction keys. */
-    } while (!strchr(resp, (char) ret));
+        /* (a function key's value cut to a char might look like one) */
+    } while (ret > 255 || !strchr(resp, (char) ret));
+#ifdef PS5_CONTROLLER
+    ps5_curses_dialog = outer_dialog;
+#endif
     if (oldcrsr >= 0)
         (void) curs_set(oldcrsr);
 
