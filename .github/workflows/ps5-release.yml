@@ -1,8 +1,14 @@
 name: PS5 release
 
-# - Push to the ps5 branch  -> rebuild and replace the "nightly" pre-release
+# The ELF payload. The native title has its own workflow, ps5-native.yml.
+#
+# - Push to the ps5 branch  -> build a nightly, kept as a CI artifact
 # - Push a tag like v0.1.0  -> publish a versioned release
 # - Manual run              -> same as a push (nightly)
+#
+# A v* release becomes the repository's newest, and the homebrew catalog
+# updates the native title's listing only to the newest release: publish one
+# before a native release, not after.
 on:
   push:
     branches: [ps5]
@@ -74,18 +80,17 @@ jobs:
           Controls and build notes: [sys/ps5/README.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/sys/ps5/README.md)
           EOF
 
-      - name: Publish nightly
+      # Not a release: the homebrew catalog updates a listing only to the
+      # repository's newest release, and a nightly republished on every push
+      # would always be the newest.
+      - name: Upload nightly
         if: steps.ver.outputs.tag == 'nightly'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release delete nightly --cleanup-tag --yes || true
-          gh release create nightly \
-            --target "$GITHUB_SHA" --prerelease \
-            --title "${{ steps.ver.outputs.name }}" \
-            --notes-file notes.md \
-            "NetHack-ps5-nightly.zip" \
-            "sys/ps5/pkg/NetHack/nethack.elf"
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetHack-ps5-nightly-${{ github.sha }}
+          path: |
+            NetHack-ps5-nightly.zip
+            sys/ps5/pkg/NetHack/nethack.elf
 
       - name: Publish versioned release
         if: steps.ver.outputs.tag != 'nightly'

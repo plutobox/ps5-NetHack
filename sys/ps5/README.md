@@ -66,9 +66,21 @@ bash package-native.sh --build    # -> build-ps5/app/dist/PPSA92042{,.zip}
 ```
 
 Copy the `PPSA92042` folder to `/data/homebrew/` on the PS5 (for example
-over FTP), and ShadowMountPlus installs it. Tagging the ps5 branch with the
-`contentVersion` from `/sce_sys/param.json` (for example `01.000.000`)
-publishes the zip as a release for the catalog.
+over FTP), and ShadowMountPlus installs it.
+
+### Releasing the title
+
+The homebrew catalog tells consoles an update exists by comparing
+`contentVersion` in `/sce_sys/param.json` (`NN.NNN.NNN`), so every release
+raises it and is tagged with it. The **PS5 native title** workflow does all of
+it: run it by hand on `ps5` (Actions → PS5 native title → Run workflow, or
+`gh workflow run ps5-native.yml --ref ps5 -f release=patch`) with `release`
+set to `patch`, `minor` or `major`. It raises the version, builds, commits the
+bump, tags it and publishes the release with `PPSA92042.zip` as its only
+asset. `current` releases the committed value unchanged. Leave `notes` empty
+to list the commits since the last release. `content-version.py` holds the
+rules, and a tag pushed by hand must match `contentVersion` and be higher than
+every earlier version tag. The catalog's update job then picks the release up.
 
 ### Porting notes: what a native title may and may not do
 
@@ -131,9 +143,9 @@ make package        # -> pkg/NetHack/
 
 ## Install and run
 
-Prebuilt zips are on the [Releases](../../releases) page. `nightly` tracks
-the `ps5` branch, and `v*` tags are stable releases. Both are built by
-`.github/workflows/ps5-release.yml`.
+Stable payload zips are on the [Releases](../../releases) page under `v*`
+tags. Each push to `ps5` builds a nightly, which is kept as an artifact of its
+**PS5 release** run (`.github/workflows/ps5-release.yml`).
 
 1. Unzip the release (or use `pkg/NetHack/` from your own build) and copy the
    `NetHack` folder to `/data/NetHack/` on the PS5 over FTP.
