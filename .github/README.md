@@ -45,9 +45,10 @@ right now.
 - **`>>` (more messages):** Cross continues, and Circle skips the rest of
   this turn's messages. The d-pad does nothing there, so you can't walk past
   a message unread.
-- **Typing text** (names, engravings, wishes) uses an on-screen keyboard.
-  The d-pad picks a key, Cross types it, Square deletes, Triangle adds a
-  space, Options finishes and Circle cancels.
+- **Typing text** (names, engravings, wishes) opens the PS5's own
+  on-screen keyboard. If it can't open, NetHack draws its own keyboard: the
+  d-pad picks a key, Cross types it, Square deletes, Triangle adds a space,
+  Options finishes and Circle cancels.
 
 ## Saving and quitting
 
@@ -59,9 +60,6 @@ right now.
 
 ## What's missing
 
-- **The system keyboard.** A title can load the PS5's keyboard module but
-  can't call it (`sceKernelDlsym` finds none of its functions), so text is
-  typed on NetHack's own on-screen keyboard instead.
 - **USB keyboards.** The native title can't read them, so every command goes
   through the controller.
 - **Graphics.** There are no tiles: the map uses NetHack's curses interface

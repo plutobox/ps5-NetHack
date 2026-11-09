@@ -799,19 +799,24 @@ typedef struct {
 
 enum { IME_STATUS_NONE, IME_STATUS_RUNNING, IME_STATUS_FINISHED };
 
-/* A title is not given libSceImeDialog at start (its imports would be
- * left unresolved), so it is loaded when first needed and its functions
- * looked up by name. */
+/* A title is not given libSceImeDialog at start, and sceKernelDlsym finds
+ * none of its functions once it is loaded (0x80020003).  Instead they are
+ * linked as ordinary imports, through the SDK's libSceImeDialog.so stub, and
+ * the module is loaded before the first call: the console binds an import
+ * at its first call, from the modules loaded by then.  Until then its
+ * address reads 0, so it is called directly, never through a pointer taken
+ * early.  (The approach of griches/PS5_DevilutionX, ps5/src/platform.c,
+ * for libSceMouse.)  Verified on a PS5 (2026-11-09): the system keyboard
+ * opens over the game and returns the text typed. */
 int sceKernelLoadStartModule(const char *path, size_t argc, const void *argv,
                              uint32_t flags, void *option, int *result);
-int sceKernelDlsym(int handle, const char *symbol, void **address);
 /* A title's sandbox shows the system libraries under /<random word>/ */
 const char *sceKernelGetFsSandboxRandomWord(void);
 
-static int (*ime_init)(const ime_dialog_param *param, void *extended);
-static int (*ime_status)(void);
-static int (*ime_result)(ime_dialog_result *result);
-static int (*ime_term)(void);
+int sceImeDialogInit(const ime_dialog_param *param, void *extended);
+int sceImeDialogGetStatus(void);
+int sceImeDialogGetResult(ime_dialog_result *result);
+int sceImeDialogTerm(void);
 
 static int ime_load(void)
 {
@@ -831,25 +836,8 @@ static int ime_load(void)
                "(0x%08x)\n", path, (unsigned) handle);
         return 0;
     }
-    {
-        int r1 = sceKernelDlsym(handle, "sceImeDialogInit",
-                                (void **) &ime_init);
-        int r2 = sceKernelDlsym(handle, "sceImeDialogGetStatus",
-                                (void **) &ime_status);
-        int r3 = sceKernelDlsym(handle, "sceImeDialogGetResult",
-                                (void **) &ime_result);
-        int r4 = sceKernelDlsym(handle, "sceImeDialogTerm",
-                                (void **) &ime_term);
-
-        if (r1 || r2 || r3 || r4 || !ime_init || !ime_status || !ime_result
-            || !ime_term) {
-            printf("nethack: the on-screen keyboard's functions are missing "
-                   "(module 0x%08x: %08x %08x %08x %08x)\n", (unsigned) handle,
-                   (unsigned) r1, (unsigned) r2, (unsigned) r3,
-                   (unsigned) r4);
-            return 0;
-        }
-    }
+    printf("nethack: on-screen keyboard module loaded (0x%08x)\n",
+           (unsigned) handle);
     state = 1;
     return 1;
 }
@@ -884,7 +872,8 @@ int ps5_text_input(const char *prompt, char *answer, int size)
     param.halign = param.valign = 1;
     param.title = title;
 
-    rc = ime_init(&param, NULL);
+    printf("nethack: calling sceImeDialogInit\n");
+    rc = sceImeDialogInit(&param, NULL);
     if (rc < 0) {
         printf("nethack: on-screen keyboard unavailable (0x%08x)\n",
                (unsigned) rc);
@@ -893,13 +882,13 @@ int ps5_text_input(const char *prompt, char *answer, int size)
     printf("nethack: on-screen keyboard open: %s\n", prompt);
     /* the system draws the keyboard over the title; keep showing the game
      * underneath until it closes */
-    while ((status = ime_status()) == IME_STATUS_RUNNING) {
+    while ((status = sceImeDialogGetStatus()) == IME_STATUS_RUNNING) {
         present();
         sceKernelUsleep(16000);
     }
     memset(&result, 0, sizeof result);
-    rc = status == IME_STATUS_FINISHED ? ime_result(&result) : -1;
-    ime_term();
+    rc = status == IME_STATUS_FINISHED ? sceImeDialogGetResult(&result) : -1;
+    sceImeDialogTerm();
     printf("nethack: on-screen keyboard closed (status %d, result 0x%08x, "
            "outcome %d)\n", status, (unsigned) rc, result.outcome);
     if (rc < 0 || result.outcome != 0)

@@ -40,8 +40,8 @@ which changes with what is on screen.
 - **`>>` (more messages)**: Cross continues; Circle skips the rest of the
   turn's messages. The d-pad does nothing there, so walking into a message
   never dismisses it unread.
-- **Text** (names, engravings, wishes): the system keyboard, or, where a
-  title cannot open it, a keyboard drawn in the game: the d-pad picks a key,
+- **Text** (names, engravings, wishes): the PS5's own on-screen keyboard.
+  If it can't open, a keyboard drawn in the game: the d-pad picks a key,
   Cross types it, Square deletes, Triangle is a space, Options finishes and
   Circle cancels.
 - The hint bar at the bottom always shows what the buttons do right now.
@@ -113,10 +113,16 @@ every earlier version tag. The catalog's update job then picks the release up.
   `PDC_pump_and_peep` with a version that only peeks. PDCurses also drops
   arrows and function keys read from a window without keypad mode, so the
   controller's prompts read keys through `curses_getch()`.
-- **The system keyboard.** libSceImeDialog loads, but `sceKernelDlsym`
-  finds none of its functions from a title (`0x80020003`), so text is typed
-  on the keyboard drawn in the game. `ps5main.c` still tries the system one
-  first.
+- **The system keyboard.** A title isn't given libSceImeDialog, and once
+  it's loaded `sceKernelDlsym` finds none of its functions (`0x80020003`).
+  What works is to link them as ordinary imports, through the SDK's
+  `libSceImeDialog.so` stub, and load
+  `/<sandbox word>/common/lib/libSceImeDialog.sprx` before the first call:
+  the console binds an import at its first call, from the modules loaded by
+  then. Until then the import's address reads 0, so `ps5main.c` calls the
+  functions directly, never through a pointer. This is
+  [PS5_DevilutionX](https://github.com/griches/PS5_DevilutionX)'s method for
+  the mouse library. The keyboard drawn in the game stays as the fallback.
 - **Debugging.** Building `ps5main.c` with `-DPS5_SCREENSHOT` writes each
   frame to `/data/nethack-screen.bmp` and types the contents of
   `/data/nethack-input.txt`, so the game can be driven and watched over FTP
