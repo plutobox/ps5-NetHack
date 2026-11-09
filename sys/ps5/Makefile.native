@@ -1,0 +1,129 @@
+# Compile NetHack as a native PS5 title (eboot.bin) for ShadowMountPlus and
+# the PS5 homebrew catalog, beside the ELF payload that Makefile builds.
+#
+#   make -f Makefile.native            -> nethack-native.objs
+#   bash package-native.sh --build     -> build-ps5/app/dist/<TITLE_ID>.zip
+#
+# It uses ps5-native-app-boilerplate's compiler, ps5-opengl's SDL2 (an OpenGL
+# window, presented by ps5main.c), the boilerplate's PacBrew zlib and
+# mihawk-99's platform layer; see README.md. NetHack's own Lua (5.5) and
+# PDCursesMod are compiled here: PacBrew's Lua is 5.4 and it has no PDCurses.
+# The data files come from the host build that setup.sh makes.
+
+PS5DIR   := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+NH       := $(abspath $(PS5DIR)/../..)
+NHHOST   ?= $(PS5DIR)/deps/nethack-host
+
+PS5_NATIVE_TEMPLATE ?= $(HOME)/ps5-native-app-boilerplate
+PS5_NATIVE_SDK      ?= $(PS5_NATIVE_TEMPLATE)/.deps/native/ps5-payload-sdk
+PS5_PACBREW_PREFIX  ?= $(PS5_NATIVE_TEMPLATE)/.deps/pacbrew/v0.40.2/sysroot/user/homebrew
+PS5_SDL2_PREFIX     ?= $(HOME)/ps5-opengl/build/sdl-native/sdk
+PS5_OPENGL_PREFIX   ?= $(HOME)/ps5-opengl-sdk/ps5-opengl-sdk-1.0.2/sdk
+
+CC := env PS5_PAYLOAD_SDK=$(PS5_NATIVE_SDK) sh $(PS5_NATIVE_TEMPLATE)/tooling/prospero-clang18
+
+PDC := $(NH)/submodules/pdcursesmod
+LUA := $(NH)/nhlua/lua/src
+OUT := $(PS5DIR)/obj-native
+
+BASEFLAGS := -O2 -g -D__PROSPERO__ -DPS5_NATIVE -fPIC -ffunction-sections \
+             -fdata-sections
+SDLINC := -isystem $(PS5_SDL2_PREFIX)/include/SDL2 -D_THREAD_SAFE
+
+# The payload's options, plus the native title's layout: data read-only at
+# the title root, /app0 (HACKDIR: a title cannot chdir, but ps5-opengl's
+# runtime resolves relative fopen() paths there), everything written under
+# /download0/nethack (VAR_PLAYGROUND), level locks made with open() there
+# instead of link() (NO_FILE_LINKS), and saves compressed with zlib
+# in-process instead of by forking compress(1).  A game ended by closing the
+# title from the home screen is recovered in-game next time (SELF_RECOVER: a
+# title cannot run the recover program).  PS5_CONTROLLER gives the curses
+# interface a highlight bar in menus and button prompts (win/curses).
+NHDEFS := -DNOTTYGRAPHICS -DCURSES_GRAPHICS -DDEFAULT_WINDOW_SYS=\"curses\" \
+          -DPDCURSES -DNOMAIL -DNOSUSPEND -DNOSHELL -DNOPANICTRACE \
+          -DHACKDIR=\"/app0\" -DVAR_PLAYGROUND=\"/download0/nethack\" \
+          -DNO_FILE_LINKS -DLOCKDIR=\"/download0/nethack\" -DZLIB_COMP \
+          -DSELF_RECOVER -DPS5_CONTROLLER
+NHINC := -I$(OUT)/gen -I$(NH)/include -I$(LUA) -I$(PDC) \
+         -isystem $(PS5_PACBREW_PREFIX)/include
+
+NHSRC_SRC := allmain alloc apply artifact attrib ball bones botl calendar \
+  cfgfiles cmd coloratt dbridge decl detect dig display dlb do do_name do_wear \
+  dog dogmove dokick dothrow drawing dungeon earlyarg eat end engrave exper \
+  explode extralev files fountain getpos glyphs hack hacklib iactions insight \
+  invent isaac64 light lock mail makemon mcastu mdlib mhitm mhitu minion mklev \
+  mkmap mkmaze mkobj mkroom mon mondata monmove monst mplayer mthrowu muse \
+  music nhlua nhlsel nhlobj nhmd4 objects o_init objnam options pager pickup \
+  pline polyself potion pray priest quest questpgr read rect region report \
+  restore revision rip rnd role rumors save selvar sfbase sfstruct shk shknam \
+  sit sounds sp_lev spell stairs symbols sys steal steed strutil teleport \
+  timeout topten track trap u_init uhitm utf8map vault vision weapon were \
+  wield windows wizard wizcmds worm worn write zap version date
+NHSRC_SHARE := posixregex ioctl unixtty
+NHSRC_UNIX  := unixmain unixunix unixres
+NHSRC_CURS  := cursmain curswins cursmisc cursdial cursstat cursinit cursmesg \
+  cursinvt
+
+LUASRC := lapi lcode lctype ldebug ldo ldump lfunc lgc llex lmem lobject \
+  lopcodes lparser lstate lstring ltable ltm lundump lvm lzio lauxlib lbaselib \
+  lcorolib ldblib liolib lmathlib loadlib loslib lstrlib ltablib lutf8lib linit
+
+PDCSRC := addch addchstr addstr attr beep bkgd border clear color debug delch \
+  deleteln getch getstr getyx inch inchstr initscr inopts insch insstr instr \
+  kernel keyname mouse move outopts overlay pad panel printw refresh scanw \
+  scr_dump scroll slk termattr terminfo touch util window
+PDCSDLSRC := pdcclip pdcdisp pdcgetsc pdckbd pdcscrn pdcsetsc pdcutil
+
+OBJS := $(addprefix $(OUT)/nh/,$(addsuffix .o,$(NHSRC_SRC) $(NHSRC_SHARE) \
+          $(NHSRC_UNIX) $(NHSRC_CURS))) \
+        $(addprefix $(OUT)/lua/,$(addsuffix .o,$(LUASRC))) \
+        $(addprefix $(OUT)/pdc/,$(addsuffix .o,$(PDCSRC) $(PDCSDLSRC))) \
+        $(OUT)/ps5main.o
+
+all: nethack-native.objs
+
+# Every object is linked by package-native.sh.
+nethack-native.objs: $(OBJS)
+	@printf '%s\n' $(OBJS) > $@
+
+$(OUT)/gen/date.h: $(NHHOST)/include/date.h
+	@mkdir -p $(@D)
+	cp $< $@
+
+$(OUT)/nh/%.o: $(NH)/src/%.c $(OUT)/gen/date.h
+	@mkdir -p $(@D)
+	$(CC) $(BASEFLAGS) $(NHDEFS) $(NHINC) -c -o $@ $<
+$(OUT)/nh/%.o: $(NH)/sys/share/%.c $(OUT)/gen/date.h
+	@mkdir -p $(@D)
+	$(CC) $(BASEFLAGS) $(NHDEFS) $(NHINC) -c -o $@ $<
+$(OUT)/nh/unixmain.o: $(NH)/sys/unix/unixmain.c $(OUT)/gen/date.h
+	@mkdir -p $(@D)
+	$(CC) $(BASEFLAGS) $(NHDEFS) $(NHINC) -Dmain=nethack_main -c -o $@ $<
+$(OUT)/nh/%.o: $(NH)/sys/unix/%.c $(OUT)/gen/date.h
+	@mkdir -p $(@D)
+	$(CC) $(BASEFLAGS) $(NHDEFS) $(NHINC) -c -o $@ $<
+$(OUT)/nh/%.o: $(NH)/win/curses/%.c $(OUT)/gen/date.h
+	@mkdir -p $(@D)
+	$(CC) $(BASEFLAGS) $(NHDEFS) $(NHINC) -c -o $@ $<
+
+$(OUT)/lua/%.o: $(LUA)/%.c
+	@mkdir -p $(@D)
+	$(CC) $(BASEFLAGS) -w -c -o $@ $<
+
+$(OUT)/pdc/%.o: $(PDC)/pdcurses/%.c
+	@mkdir -p $(@D)
+	$(CC) $(BASEFLAGS) -w -I$(PDC) -I$(PDC)/sdl2 $(SDLINC) -c -o $@ $<
+$(OUT)/pdc/%.o: $(PDC)/sdl2/%.c
+	@mkdir -p $(@D)
+	$(CC) $(BASEFLAGS) -w -I$(PDC) -I$(PDC)/sdl2 -I$(PDC)/common $(SDLINC) -c -o $@ $<
+
+$(OUT)/ps5main.o: $(PS5DIR)/ps5main.c
+	@mkdir -p $(@D)
+	$(CC) $(BASEFLAGS) -Wall -DSDL_MAIN_HANDLED -DPS5_CONTROLLER \
+	    -I$(PDC)/common $(SDLINC) \
+	    -isystem $(PS5_OPENGL_PREFIX)/include -c -o $@ $<
+
+clean:
+	rm -rf $(OUT) nethack-native.objs build-ps5
+
+.PHONY: all clean

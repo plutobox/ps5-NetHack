@@ -9,6 +9,9 @@
 #include "cursmisc.h"
 #include "func_tab.h"
 #include "dlb.h"
+#ifdef PS5_CONTROLLER
+#include "cursdial.h"
+#endif
 
 /* Misc. curses interface functions */
 
@@ -812,12 +815,94 @@ curses_convert_attr(int attr)
 
 /* Convert special keys into values that NetHack can understand.
 Currently this is limited to arrow keys, but this may be expanded. */
+#ifdef PS5_CONTROLLER
+/* PS5: sys/ps5/ps5main.c sends the DualSense's buttons as function keys
+   (F1 Cross, F2 Square, F3 Triangle, F4 Options, F5 Create, F6 touchpad,
+   F7 L1, F8 R1, F9 L2, F10 R2, F11 L3, F12 R3; Circle is Escape) and the
+   d-pad and stick as arrow and keypad keys.  Menus and button prompts take
+   them in cursdial.c; here each gets its meaning for what NetHack is
+   asking.  On the map: Cross and Square the actions for where you stand
+   (^Q, bound to #herecmdmenu in the port's .nethackrc), Triangle the
+   inventory, Options the command menu, Create save, the touchpad look
+   here, L1/R1 the stairs, L2 search, R2 rest, L3 look at, R3 help. */
+static int
+ps5_pad_key(int key)
+{
+    int button = (key >= KEY_F(1) && key <= KEY_F(12)) ? key - KEY_F0 : 0;
+
+    if (!button) {
+        /* the d-pad answers direction prompts as well as moving: curses
+           would otherwise reject arrows outside of command input */
+        if (program_state.input_state != otherInp)
+            return -1;
+        switch (key) {
+        case KEY_LEFT: return iflags.num_pad ? '4' : 'h';
+        case KEY_RIGHT: return iflags.num_pad ? '6' : 'l';
+        case KEY_UP: return iflags.num_pad ? '8' : 'k';
+        case KEY_DOWN: return iflags.num_pad ? '2' : 'j';
+        case KEY_A1: return iflags.num_pad ? '7' : 'y';
+        case KEY_A3: return iflags.num_pad ? '9' : 'u';
+        case KEY_C1: return iflags.num_pad ? '1' : 'b';
+        case KEY_C3: return iflags.num_pad ? '3' : 'n';
+        default: return -1;
+        }
+    }
+    switch (program_state.input_state) {
+    case commandInp: { /* on the map */
+        static const char map_keys[13] = {
+            0, C('q'), C('q'), 'i', '#', 'S', ':', '<', '>', 's', '.', ';',
+            '?'
+        };
+        return map_keys[button];
+    }
+    case getposInp: /* choosing a spot with the cursor */
+        switch (button) {
+        case 1: return '.';  /* Cross: pick this spot */
+        case 2: return ',';  /* Square: pick, without describing it */
+        case 6: return ':';
+        case 11: return ';';
+        default: return '\033';
+        }
+    default: /* a prompt, such as "What do you want to eat?" */
+        switch (button) {
+        case 1: return '\n'; /* Cross: confirm */
+        case 2: return '*';  /* Square: everything */
+        case 3: return '?';  /* Triangle: list the choices as a menu */
+        default: return '\033';
+        }
+    }
+}
+
+/* What the controller is driving, for sys/ps5's button hints: 0 the map,
+   1 a menu, 2 a button prompt, 3 picking a spot, 4 another prompt. */
+int
+ps5_curses_context(void)
+{
+    if (ps5_curses_dialog)
+        return ps5_curses_dialog;
+    switch (program_state.input_state) {
+    case commandInp: return 0;
+    case getposInp: return 3;
+    default: return 4;
+    }
+}
+#endif /* PS5_CONTROLLER */
+
 int
 curses_convert_keys(int key)
 {
     boolean reject = (program_state.input_state == otherInp),
             as_is = FALSE, numpad_esc = FALSE;
     int ret = key;
+
+#ifdef PS5_CONTROLLER
+    {
+        int pad = ps5_pad_key(key);
+
+        if (pad > 0)
+            return pad;
+    }
+#endif
 
     if (modifiers_available)
         update_modifiers();

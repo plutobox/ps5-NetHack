@@ -1,11 +1,92 @@
 # NetHack for jailbroken PS5
 
-A native PS5 build of NetHack 5.0 (dev). It uses NetHack's **curses** interface
-drawn by **PDCursesMod's SDL2 backend**, on top of the
-[ps5-payload-dev SDL2 port](https://github.com/ps5-payload-dev/SDL). It shows
-on the TV and takes input from a USB keyboard and/or a DualSense.
+NetHack 5.0 (dev) for the PS5, in two builds that share this directory:
 
-> Status: builds and links (`nethack.elf`, x86-64). Not yet tested on hardware.
+- **The native title** (`PPSA92042`, an `eboot.bin` folder app): installs
+  from ShadowMountPlus or the PS5 homebrew catalog, shows on the TV and is
+  played with the DualSense. Tested on a PS5 (firmware 13.60).
+- **The ELF payload** (`nethack.elf`), launched from the homebrew menu or
+  shsrv. Builds and links; not yet tested on hardware.
+
+Both use NetHack's **curses** interface drawn by **PDCursesMod's SDL2
+backend**.
+
+## The native title
+
+### Playing with the DualSense
+
+Every button shows its meaning in a hint bar at the bottom of the screen,
+which changes with what is on screen.
+
+| Button | On the map | In a menu | In a prompt |
+|---|---|---|---|
+| D-pad / left stick | Move (the stick does diagonals; hold to walk) | Move the highlight | Choose a button |
+| ✕ Cross | Actions for where you stand | Select the highlighted entry | Confirm |
+| ○ Circle | Cancel | Back | Cancel |
+| □ Square | Actions for where you stand | Toggle the entry (pick several) | Everything (`*`) |
+| △ Triangle | Inventory (pick an item for what you can do with it) | Done | List the choices |
+| Options | Command menu, every command described | | |
+| Create | Save | | |
+| L1 / R1 | Go up / down stairs | Previous / next page | |
+| L2 / R2 | Search / rest | | |
+| Touchpad | Look here | | |
+| L3 / R3 | Look at something / help | | |
+
+Questions with a few answers ("Really save?", "Old game in progress…")
+appear as a row of buttons. You play under your PSN name. Saves go to the
+title's own storage. If you close the game from the home screen without
+saving, NetHack offers to recover it next time.
+
+### Build and install
+
+On Linux or WSL with `clang-18 lld-18 llvm-18 libclang-rt-18-dev cmake
+ninja-build`, after setting up the same toolchain as
+`.github/workflows/ps5-native.yml` (ps5-native-app-boilerplate, ps5-opengl
+and its SDK and SDL2, mihawk-99's platform layer):
+
+```sh
+cd sys/ps5
+./setup.sh --native               # PDCursesMod and NetHack's data files
+make -f Makefile.native           # -> nethack-native.objs
+bash package-native.sh --build    # -> build-ps5/app/dist/PPSA92042{,.zip}
+```
+
+Copy the `PPSA92042` folder to `/data/homebrew/` on the PS5 (for example
+over FTP), and ShadowMountPlus installs it. Tagging the ps5 branch with the
+`contentVersion` from `/sce_sys/param.json` (for example `01.000.000`)
+publishes the zip as a release for the catalog.
+
+### Porting notes: what a native title may and may not do
+
+- **No exit.** `exit()` raises SIGSYS. `ps5main.c` wraps it and shows a
+  "close it from the home screen" screen instead.
+- **Missing or refused C library functions.** These are supplied by
+  [mihawk-99's platform layer](https://github.com/mihawk-99/PS5_PayloadSDK)
+  (`getcwd`, `opendir`, `access`, `mkstemp`, `isatty`, `fork` and others) or
+  by `native_shims.c` (`lstat`, `chdir`, `getpwnam`, `setgid`,
+  `cfgetospeed`, `fpathconf`, `tmpnam`). `package-native.sh` binds the
+  standard names with `--defsym`, because a title must not define libc's own
+  names. It doesn't bind `sysconf` or `pthread_exit`: the platform's
+  versions call the originals.
+- **No chdir.** NetHack's data sits at the title root, `/app0`.
+  ps5-opengl's runtime resolves relative `fopen()` paths there, and
+  `native_shims.c` does the same for `open()`. Everything written goes to
+  `/download0/nethack` (`VAR_PLAYGROUND`).
+- **One OpenGL window, no window surface, no keyboard.** PDCurses draws into
+  an off-screen surface that `ps5main.c` presents with OpenGL. It wraps
+  `SDL_CreateWindow`, `SDL_GetWindowSurface` and
+  `SDL_UpdateWindowSurface[Rects]`.
+- **No fork.** Saves are compressed with zlib (`ZLIB_COMP`) rather than by
+  running `compress`. Recovery happens in the game (`SELF_RECOVER`).
+- **Locks.** There's no `link()`, and no way to tell whether a lock's
+  process is alive. That's why the port uses `NO_FILE_LINKS` and
+  `MAXPLAYERS=0` (one game per player name).
+- **Debugging.** Building with `-DPS5_SCREENSHOT` writes each frame to
+  `/data/nethack-screen.bmp` and types the contents of
+  `/data/nethack-input.txt`, so the game can be driven and watched over FTP.
+  The log is `/data/nethack-ps5.log`.
+
+## The ELF payload
 
 ## Requirements
 

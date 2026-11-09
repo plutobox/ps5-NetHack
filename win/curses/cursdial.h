@@ -28,4 +28,11 @@ boolean curs_nonselect_menu_action(WINDOW *win, void *menu, int how,
                                    char selectors[256], int *num_selected_p)
                                                                   NONNULLPTRS;
 
+#ifdef PS5_CONTROLLER
+/* which controller-driven dialog is open, for sys/ps5's button hints */
+#define PS5_DIALOG_MENU 1
+#define PS5_DIALOG_BUTTONS 2
+extern int ps5_curses_dialog;
+#endif
+
 #endif /* CURSDIAL_H */

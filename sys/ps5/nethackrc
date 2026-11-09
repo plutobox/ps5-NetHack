@@ -1,8 +1,15 @@
-# NetHack options for the PS5 port. Edit /data/NetHack/.nethackrc to change.
+# NetHack options for the PS5 port. The payload reads them from
+# /data/NetHack/.nethackrc, which you can edit; the native title ships them
+# read-only in /app0.
 OPTIONS=windowtype:curses
-OPTIONS=color,!number_pad,autopickup,pickup_types:$?!/="+
+OPTIONS=color,number_pad:0,autopickup,pickup_types:$?!/="+
 OPTIONS=hilite_pet,hilite_pile,lit_corridor,showexp,time
 OPTIONS=menucolors,statushilites:10
 OPTIONS=perm_invent,msg_window:reversed
 OPTIONS=!mail,!splash_screen
 OPTIONS=symset:DECgraphics
+# Controller-friendly: '#' opens a menu of commands, no tutorial question,
+# and ^Q (the native title's Cross and Square on the map) shows the actions
+# for where you stand.
+OPTIONS=extmenu,!tutorial
+BIND=^Q:herecmdmenu

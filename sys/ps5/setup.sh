@@ -6,14 +6,19 @@
 # 2. Builds the PS5 SDL2 port and installs it into the SDK sysroot
 # 3. Fetches the PDCursesMod submodule
 # 4. Builds NetHack natively (deps/nethack-host) to generate data files
+#
+# ./setup.sh --native does only 3 and 4: the native title (Makefile.native)
+# brings its own toolchain and SDL2 (see README.md).
 set -e
 PS5DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NH="$(cd "$PS5DIR/../.." && pwd)"
 DEPS="$PS5DIR/deps"
 SDK="$DEPS/ps5-payload-sdk"
+NATIVE_ONLY=
+[ "${1:-}" = "--native" ] && NATIVE_ONLY=1
 mkdir -p "$DEPS"
 
-if [ ! -x "$SDK/bin/prospero-clang" ]; then
+if [ -z "$NATIVE_ONLY" ] && [ ! -x "$SDK/bin/prospero-clang" ]; then
     echo "== Downloading ps5-payload-sdk"
     wget -q -O "$DEPS/sdk.zip" \
         https://github.com/ps5-payload-dev/sdk/releases/latest/download/ps5-payload-sdk.zip
@@ -21,7 +26,7 @@ if [ ! -x "$SDK/bin/prospero-clang" ]; then
     rm "$DEPS/sdk.zip"
 fi
 
-if [ ! -f "$SDK/target/user/homebrew/lib/libSDL2.a" ]; then
+if [ -z "$NATIVE_ONLY" ] && [ ! -f "$SDK/target/user/homebrew/lib/libSDL2.a" ]; then
     echo "== Building SDL2 for PS5 (configure step takes a few minutes)"
     [ -d "$DEPS/SDL" ] || git clone -q --depth 1 -b release-2.30.x-ps5 \
         https://github.com/ps5-payload-dev/SDL "$DEPS/SDL"
@@ -46,4 +51,8 @@ if [ ! -f "$DEPS/nethack-host/include/date.h" ]; then
     make -C "$DEPS/nethack-host" -j"$(nproc)" all > "$DEPS/host-build.log" 2>&1
 fi
 
-echo "== Setup done. Now run: make && make package"
+if [ -n "$NATIVE_ONLY" ]; then
+    echo "== Setup done. Now run: make -f Makefile.native && bash package-native.sh --build"
+else
+    echo "== Setup done. Now run: make && make package"
+fi

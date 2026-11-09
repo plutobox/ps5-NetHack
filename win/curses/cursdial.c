@@ -96,6 +96,21 @@ static int menu_max_height(void);
 
 static nhmenu *nhmenus = NULL;  /* NetHack menu array */
 
+#ifdef PS5_CONTROLLER
+/* PS5: menus and prompts driven by a DualSense.  sys/ps5/ps5main.c sends the
+   d-pad as arrow keys and the buttons as function keys (see cursmisc.c):
+   menus get a highlight bar and single-letter prompts become buttons. */
+int ps5_curses_dialog = 0; /* PS5_DIALOG_MENU or _BUTTONS while one is open */
+static nhmenu_item *ps5_page_item(nhmenu *menu, int page, boolean last);
+static void ps5_draw_cursor(WINDOW *win, nhmenu *menu, nhmenu_item *cursor);
+static boolean ps5_menu_key(WINDOW *win, nhmenu *menu, int how, int key,
+                            nhmenu_item **cursor, int *curpage,
+                            int *num_selected, boolean *dismiss);
+static boolean ps5_buttons_fit(const char *choices);
+static int ps5_button_dialog(const char *prompt, const char *choices,
+                             char def);
+#endif
+
 /* maximum number of selector entries per page; if '$' is present
    it isn't counted toward maximum, so actual max per page is 53 */
 #define MAX_ACCEL_PER_PAGE 52 /* 'a'..'z' + 'A'..'Z' */
@@ -227,6 +242,29 @@ curses_character_input_dialog(const char *prompt, const char *choices,
     /* if messages were being suppressed for the remainder of the turn,
        re-activate them now that input is being requested */
     curses_got_input();
+
+#ifdef PS5_CONTROLLER
+    if (choices != NULL && ps5_buttons_fit(choices))
+        return ps5_button_dialog(prompt, choices, def);
+    if (choices == NULL) {
+        /* the core validates some answers itself, with the choices only
+           in the prompt's text: "Shall I pick ... for you? [ynaq]" */
+        const char *open = strrchr(prompt, '['), *close;
+        char text[BUFSZ], inline_choices[QBUFSZ];
+
+        if (open && (close = strchr(open, ']')) != 0 && !close[1]
+            && close - open - 1 < QBUFSZ && open - prompt < BUFSZ) {
+            (void) strncpy(inline_choices, open + 1, close - open - 1);
+            inline_choices[close - open - 1] = '\0';
+            if (ps5_buttons_fit(inline_choices)) {
+                (void) strncpy(text, prompt, open - prompt);
+                text[open - prompt] = '\0';
+                trimspaces(text);
+                return ps5_button_dialog(text, inline_choices, def);
+            }
+        }
+    }
+#endif
 
     if (svm.moves > 0 || !program_state.beyond_savefile_load) {
         curses_get_window_size(MAP_WIN, &map_height, &map_width);
@@ -1525,8 +1563,20 @@ menu_get_selections(WINDOW *win, nhmenu *menu, int how)
     char selectors[256], groupaccels[256];
     nhmenu_item *menu_item_ptr;
 
+#ifdef PS5_CONTROLLER
+    nhmenu_item *cursor = NULL;
+    int ps5_outer_dialog = ps5_curses_dialog;
+#endif
+
     activemenu = win;
     menu_display_page(win, menu, curpage, selectors, groupaccels);
+#ifdef PS5_CONTROLLER
+    ps5_curses_dialog = PS5_DIALOG_MENU;
+    if (how != PICK_NONE) {
+        cursor = ps5_page_item(menu, curpage, FALSE);
+        ps5_draw_cursor(win, menu, cursor);
+    }
+#endif
 
     while (!dismiss) {
         curletter = curses_getch();
@@ -1540,6 +1590,18 @@ menu_get_selections(WINDOW *win, nhmenu *menu, int how)
         if (curletter == '\033') {
             curletter = curses_convert_keys(curletter);
         }
+
+#ifdef PS5_CONTROLLER
+        if (ps5_menu_key(win, menu, how, curletter, &cursor, &curpage,
+                         &num_selected, &dismiss)) {
+            if (num_selected == -1) {
+                activemenu = NULL;
+                ps5_curses_dialog = ps5_outer_dialog;
+                return -1;
+            }
+            continue;
+        }
+#endif
 
         switch (how) {
         case PICK_NONE:
@@ -1605,8 +1667,19 @@ menu_get_selections(WINDOW *win, nhmenu *menu, int how)
                                                  selectors, &num_selected);
             if (num_selected == -1) {
                 activemenu = NULL;
+#ifdef PS5_CONTROLLER
+                ps5_curses_dialog = ps5_outer_dialog;
+#endif
                 return -1;
             }
+#ifdef PS5_CONTROLLER
+            /* a page change redrew the menu */
+            if (!dismiss && how != PICK_NONE) {
+                if (!cursor || cursor->page_num != curpage)
+                    cursor = ps5_page_item(menu, curpage, FALSE);
+                ps5_draw_cursor(win, menu, cursor);
+            }
+#endif
         }
 
         menu_item_ptr = menu->entries;
@@ -1663,6 +1736,9 @@ menu_get_selections(WINDOW *win, nhmenu *menu, int how)
     }
 
     activemenu = NULL;
+#ifdef PS5_CONTROLLER
+    ps5_curses_dialog = ps5_outer_dialog;
+#endif
     return num_selected;
 }
 
@@ -1793,5 +1869,310 @@ menu_max_height(void)
 {
     return term_rows - 2;
 }
+
+#ifdef PS5_CONTROLLER
+
+/* The DualSense buttons, as sys/ps5/ps5main.c sends them. */
+#define PS5_CROSS KEY_F(1)
+#define PS5_SQUARE KEY_F(2)
+#define PS5_TRIANGLE KEY_F(3)
+#define PS5_L1 KEY_F(7)
+#define PS5_R1 KEY_F(8)
+
+/* The first (or last) selectable entry on a menu page, if any. */
+static nhmenu_item *
+ps5_page_item(nhmenu *menu, int page, boolean last)
+{
+    nhmenu_item *item, *found = NULL;
+
+    for (item = menu->entries; item; item = item->next_item)
+        if (item->page_num == page && item->identifier.a_void != NULL) {
+            found = item;
+            if (!last)
+                break;
+        }
+    return found;
+}
+
+/* Highlight the cursor's entry: a reverse-video bar across the menu. */
+static void
+ps5_draw_cursor(WINDOW *win, nhmenu *menu, nhmenu_item *cursor)
+{
+    int line;
+
+    if (!cursor)
+        return;
+    for (line = 0; line < max(cursor->num_lines, 1); line++)
+        mvwchgat(win, cursor->line_num + 1 + line, 1, menu->width, A_REVERSE,
+                 0, NULL);
+    wrefresh(win);
+}
+
+/* Move the cursor to the next (dir 1) or previous (dir -1) selectable
+   entry, turning the page when it runs off one. */
+static nhmenu_item *
+ps5_step_cursor(nhmenu *menu, nhmenu_item *cursor, int dir)
+{
+    nhmenu_item *item = cursor;
+
+    while (item) {
+        item = dir > 0 ? item->next_item : item->prev_item;
+        if (item && item->identifier.a_void != NULL)
+            return item;
+    }
+    return cursor; /* stay at the first or last entry */
+}
+
+/* Controller keys in a menu; returns TRUE when it handled the key. */
+static boolean
+ps5_menu_key(WINDOW *win, nhmenu *menu, int how, int key,
+             nhmenu_item **cursor, int *curpage, int *num_selected,
+             boolean *dismiss)
+{
+    int page = *curpage;
+    nhmenu_item *next;
+
+    if (how == PICK_NONE) {
+        /* text to read: the buttons page through it and close it */
+        switch (key) {
+        case PS5_CROSS:
+        case PS5_TRIANGLE:
+            *num_selected = 0;
+            *dismiss = TRUE;
+            return TRUE;
+        case PS5_L1:
+        case KEY_UP:
+            page--;
+            break;
+        case PS5_R1:
+        case KEY_DOWN:
+            page++;
+            break;
+        default:
+            return FALSE;
+        }
+        if (page >= 1 && page <= menu->num_pages) {
+            *curpage = page;
+            menu_display_page(win, menu, page, (char *) 0, (char *) 0);
+        }
+        return TRUE;
+    }
+
+    switch (key) {
+    case KEY_UP:
+    case KEY_DOWN:
+        next = *cursor ? ps5_step_cursor(menu, *cursor,
+                                         key == KEY_DOWN ? 1 : -1)
+                       : ps5_page_item(menu, page, FALSE);
+        if (next && next->page_num != page)
+            *curpage = next->page_num;
+        *cursor = next;
+        menu_display_page(win, menu, *curpage, (char *) 0, (char *) 0);
+        ps5_draw_cursor(win, menu, *cursor);
+        return TRUE;
+    case PS5_L1:
+    case KEY_LEFT:
+    case PS5_R1:
+    case KEY_RIGHT:
+        page += (key == PS5_L1 || key == KEY_LEFT) ? -1 : 1;
+        if (page >= 1 && page <= menu->num_pages) {
+            *curpage = page;
+            *cursor = ps5_page_item(menu, page, FALSE);
+            menu_display_page(win, menu, page, (char *) 0, (char *) 0);
+            ps5_draw_cursor(win, menu, *cursor);
+        }
+        return TRUE;
+    case PS5_CROSS:
+    case PS5_SQUARE:
+        if (!*cursor)
+            return TRUE;
+        if (how == PICK_ONE) {
+            menu_clear_selections(menu);
+            menu_select_deselect(win, *cursor, SELECT, page);
+            *num_selected = 1;
+            *dismiss = TRUE;
+            return TRUE;
+        }
+        /* PICK_ANY: toggle this entry and move on, as with a checklist */
+        menu_select_deselect(win, *cursor, INVERT, page);
+        if (key == PS5_CROSS) {
+            next = ps5_step_cursor(menu, *cursor, 1);
+            if (next->page_num != page) {
+                *curpage = next->page_num;
+                menu_display_page(win, menu, *curpage, (char *) 0,
+                                  (char *) 0);
+            }
+            *cursor = next;
+        }
+        ps5_draw_cursor(win, menu, *cursor);
+        return TRUE;
+    case PS5_TRIANGLE:
+        /* done: accept what is selected (PICK_ONE: the highlighted entry) */
+        if (how == PICK_ONE && *cursor) {
+            menu_clear_selections(menu);
+            menu_select_deselect(win, *cursor, SELECT, page);
+            *num_selected = 1;
+        }
+        *dismiss = TRUE;
+        return TRUE;
+    default:
+        /* any other function key is a controller button with no meaning
+           here; ignore it rather than let it select or dismiss */
+        return key >= KEY_F(1) && key <= KEY_F(15);
+    }
+}
+
+/* Single-letter prompts that read well as a row of buttons. */
+static boolean
+ps5_buttons_fit(const char *choices)
+{
+    int count = 0;
+    const char *c;
+
+    for (c = choices; *c && *c != '\033'; c++, count++)
+        if (!isalpha((uchar) *c))
+            return FALSE; /* counts ('#') and the like: use the text prompt */
+    return count >= 2 && count <= 6;
+}
+
+/* A button's label, from the prompt where it says: "Destroy [y], Recover
+   [r], or Cancel [n]?" names each answer, as "Which ring-finger, Right or
+   Left?" does by initial; otherwise Yes, No, All, Quit, or the letter. */
+static const char *
+ps5_button_label(const char *prompt, char choice)
+{
+    static char label[QBUFSZ];
+    char tag[4] = { '[', choice, ']', '\0' };
+    const char *p, *word;
+    int len;
+
+    /* "Word [x]" */
+    if ((p = strstr(prompt, tag)) != 0 && p > prompt + 1 && p[-1] == ' ') {
+        for (word = p - 1; word > prompt && isalpha((uchar) word[-1]); word--)
+            continue;
+        len = (int) (p - 1 - word);
+        if (len > 0 && len < QBUFSZ) {
+            (void) strncpy(label, word, len);
+            label[len] = '\0';
+            return label;
+        }
+    }
+    switch (choice) {
+    case 'y': return "Yes";
+    case 'n': return "No";
+    case 'a': return "All";
+    case 'q': return "Quit";
+    }
+    /* a capitalized word in the prompt starting with the letter */
+    for (p = prompt; *p; p++)
+        if ((p == prompt || !isalpha((uchar) p[-1]))
+            && *p == (char) toupper((uchar) choice)) {
+            for (len = 0; isalpha((uchar) p[len]) && len < QBUFSZ - 1; len++)
+                label[len] = p[len];
+            label[len] = '\0';
+            if (len > 1)
+                return label;
+        }
+    label[0] = (char) toupper((uchar) choice);
+    label[1] = '\0';
+    return label;
+}
+
+/* A centered dialog: the prompt over a row of buttons, the default one
+   highlighted.  Left and right choose, Cross confirms, Circle (Escape)
+   answers as the text prompt does; a keyboard's letters still work. */
+static int
+ps5_button_dialog(const char *prompt, const char *choices, char def)
+{
+    WINDOW *win;
+    int count = 0, sel = 0, i, x, width, height, lines, buttons_w = 0;
+    int answer = -1, key, outer = ps5_curses_dialog;
+    int maxwidth = min(term_cols - 6, 70);
+    char *line, labels[6][QBUFSZ];
+
+    while (choices[count] && choices[count] != '\033' && count < 6)
+        count++;
+    for (i = 0; i < count; i++) {
+        Strcpy(labels[i], ps5_button_label(prompt, choices[i]));
+        buttons_w += (int) strlen(labels[i]) + 4;
+        if (choices[i] == def)
+            sel = i;
+    }
+    /* on a console an old game in progress was usually closed from the
+       home screen: offer to recover it first (getlock's default, Cancel,
+       ends the session) */
+    if (strstr(prompt, "Recover [r]"))
+        for (i = 0; i < count; i++)
+            if (choices[i] == 'r')
+                sel = i;
+    width = max(min((int) strlen(prompt), maxwidth), buttons_w) + 2;
+    lines = curses_num_lines(prompt, width - 2);
+    height = lines + 3;
+
+    ps5_curses_dialog = PS5_DIALOG_BUTTONS;
+    win = curses_create_window(TEXT_WIN, width, height, CENTER);
+    curses_set_wid_colors(TEXT_WIN, win);
+    for (i = 0; i < lines; i++) {
+        line = curses_break_str(prompt, width - 2, i + 1);
+        mvwaddstr(win, i + 1, 2, line);
+        free(line);
+    }
+    while (answer == -1) {
+        x = 2 + (width - buttons_w) / 2;
+        for (i = 0; i < count; i++) {
+            const char *label = labels[i];
+
+            if (i == sel)
+                curses_toggle_color_attr(win, HIGHLIGHT_COLOR, A_REVERSE, ON);
+            mvwprintw(win, lines + 2, x, "  %s  ", label);
+            if (i == sel)
+                curses_toggle_color_attr(win, HIGHLIGHT_COLOR, A_REVERSE,
+                                         OFF);
+            x += (int) strlen(label) + 4;
+        }
+        wrefresh(win);
+
+        /* as the menus read keys: the window's own wgetch() would not
+           return the function keys the controller sends */
+        key = curses_getch();
+        switch (key) {
+        case ERR:
+            iflags.term_gone = 1;
+            answer = def;
+            break;
+        case KEY_LEFT:
+            sel = (sel + count - 1) % count;
+            break;
+        case KEY_RIGHT:
+            sel = (sel + 1) % count;
+            break;
+        case PS5_CROSS:
+            answer = choices[sel];
+            break;
+        case '\033':
+            /* as the text prompt: q is preferred over n, then the default */
+            answer = def;
+            for (i = 0; choices[i]; i++)
+                if (choices[i] == 'q')
+                    answer = 'q';
+                else if (choices[i] == 'n' && answer != 'q')
+                    answer = 'n';
+            break;
+        case '\n':
+        case '\r':
+            answer = def ? def : choices[sel];
+            break;
+        default:
+            if (key > 0 && key < 256 && strchr(choices, key))
+                answer = key;
+            break;
+        }
+    }
+    curses_destroy_win(win);
+    ps5_curses_dialog = outer;
+    return answer;
+}
+
+#endif /* PS5_CONTROLLER */
 
 /*cursdial.c*/
