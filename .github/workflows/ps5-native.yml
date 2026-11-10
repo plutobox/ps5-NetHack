@@ -216,6 +216,6 @@ jobs:
             exit 0
           fi
           gh release create "$RELEASE_TAG" "dist/$TITLE_ID.zip" \
-            --verify-tag --prerelease \
+            --verify-tag \
             --title "NetHack for PS5 $RELEASE_TAG" \
             --notes-file "$RUNNER_TEMP/notes.md"
