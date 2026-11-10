@@ -2033,16 +2033,26 @@ ps5_menu_key(WINDOW *win, nhmenu *menu, int how, int key,
 
     switch (key) {
     case KEY_UP:
-    case KEY_DOWN:
-        next = *cursor ? ps5_step_cursor(menu, *cursor,
-                                         key == KEY_DOWN ? 1 : -1)
-                       : ps5_page_item(menu, page, FALSE);
-        if (next && next->page_num != page)
-            *curpage = next->page_num;
-        *cursor = next;
+    case KEY_DOWN: {
+        int dir = (key == KEY_DOWN) ? 1 : -1;
+
+        next = *cursor ? ps5_step_cursor(menu, *cursor, dir) : NULL;
+        if (next == *cursor)
+            next = NULL; /* already at the first or last entry */
+        if (next && next->page_num == page) {
+            *cursor = next;
+        } else if (page + dir >= 1 && page + dir <= menu->num_pages) {
+            /* nothing more to select on this page: turn the page, so a
+               list that is mostly text (#?) can still be read through;
+               the cursor lands on the page's first (or last) entry, or
+               nowhere when the page has none */
+            *curpage = page + dir;
+            *cursor = ps5_page_item(menu, *curpage, dir < 0);
+        }
         menu_display_page(win, menu, *curpage, (char *) 0, (char *) 0);
         ps5_draw_cursor(win, menu, *cursor);
         return TRUE;
+    }
     case PS5_L1:
     case KEY_LEFT:
     case PS5_R1:

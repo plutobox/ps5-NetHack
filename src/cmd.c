@@ -514,7 +514,7 @@ doextcmd(void)
         ge.ext_tlist = &extcmdlist[idx];
 
         retval = (*func)();
-    } while (func == doextlist);
+    } while (func == doextlist && !cmdq_peek(CQ_CANNED));
 
     return retval;
 }
@@ -570,6 +570,7 @@ doextlist(void)
     int n, pass;
     int menumode = 0, menushown[2], onelist = 0;
     boolean redisplay = TRUE, search = FALSE;
+    const struct ext_func_tab *chosen = (struct ext_func_tab *) 0;
     static const char *const headings[] = { "Extended commands",
                                       "Debugging Extended Commands" };
     int clr = NO_COLOR;
@@ -683,7 +684,14 @@ doextlist(void)
                     Sprintf(buf, " %-14s %4s %s", efp->ef_txt,
                             doc_extcmd_flagstr(menuwin, efp), cmd_desc);
                 }
+#ifdef PS5_CONTROLLER
+                /* PS5: each command can be picked, to run it */
+                any.a_int = 100 + (int) (efp - extcmdlist);
+                add_menu(menuwin, &nul_glyphinfo, &any, 0, 0, ATR_NONE, clr,
+                         buf, MENU_ITEMFLAGS_NONE);
+#else
                 add_menu_str(menuwin, buf);
+#endif
                 ++n;
             }
             if (n)
@@ -716,6 +724,12 @@ doextlist(void)
                 onelist = 1 - onelist;  /* toggle 0 -> 1, 1 -> 0 */
                 redisplay = TRUE;
                 break;
+            default:
+#ifdef PS5_CONTROLLER
+                if (selected[0].item.a_int >= 100)
+                    chosen = &extcmdlist[selected[0].item.a_int - 100];
+#endif
+                break;
             }
             free((genericptr_t) selected);
         } else {
@@ -735,6 +749,8 @@ doextlist(void)
         }
     }
     destroy_nhwindow(menuwin);
+    if (chosen && chosen->ef_funct)
+        cmdq_add_ec(CQ_CANNED, chosen->ef_funct); /* run it next */
     return ECMD_OK;
 }
 
