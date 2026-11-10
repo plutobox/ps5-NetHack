@@ -55,7 +55,7 @@ static const SDL_Keycode button_map[B_COUNT] = {
     [B_SQUARE] = SDLK_F2,   /* actions here; in menus: toggle */
     [B_TRIANGLE] = SDLK_F3, /* inventory; in menus: done */
     [B_OPTIONS] = SDLK_F4,  /* command menu */
-    [B_SHARE] = SDLK_F5,    /* Create: save */
+    [B_SHARE] = SDLK_F5,    /* Create: never arrives, the console keeps it for captures */
     [B_TOUCHPAD] = SDLK_F6, /* look here */
     [B_L1] = SDLK_F7,       /* go up; in menus: previous page */
     [B_R1] = SDLK_F8,       /* go down; in menus: next page */
@@ -608,7 +608,7 @@ static const struct hint map_hints[] = {
     { OTHER(0xF0), NULL, "Commands" }, { OTHER(0), "L1 R1", "Stairs" },
     { OTHER(0), "L2", "Search" },  { OTHER(0), "R2", "Rest" },
     { OTHER(0x16), NULL, "Look here" }, { OTHER(0), "L3", "Look at" },
-    { OTHER(0), "R3", "Help" },    { OTHER(0), "Create", "Save" }, END_HINTS
+    { OTHER(0), "R3", "Help" },    END_HINTS
 };
 static const struct hint menu_hints[] = { /* pick any number */
     { OTHER(0x12), NULL, "Move" }, { CROSS, NULL, "Select" },

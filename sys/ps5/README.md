@@ -26,7 +26,6 @@ which changes with what is on screen.
 | □ Square | Actions for where you stand | Toggle the entry (pick several) | Select, briefly | |
 | △ Triangle | Inventory (pick an item for what you can do with it) | Done | Back to yourself | |
 | Options | Command menu, every command described | | | |
-| Create | Save | | | |
 | L1 / R1 | Go up / down stairs | Previous / next page | Previous / next thing of interest | Up / down |
 | L2 / R2 | Search / rest | Fewer / more: a count ("drop 5 of the arrows"); hold to count fast | Previous / next monster | |
 | Touchpad | Look here | | Select, describing it in full | |
